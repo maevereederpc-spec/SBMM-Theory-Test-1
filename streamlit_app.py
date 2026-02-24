@@ -35,8 +35,8 @@ TEAM_B_COL = "#2F4472"
 #
 #  Two-stage process:
 #
-#  STAGE 1 — Effective Team Skill (ETS)
-#    ETS = mean(skills) − α × std(skills)     where α = 0.35
+#  STAGE 1 — Effective Team Skill (Adj)
+#    Adj = mean(skills) − α × std(skills)     where α = 0.35
 #
 #    The standard deviation of a team's skill levels is a direct measure
 #    of internal imbalance. A team with one standout player and several weak
@@ -47,9 +47,9 @@ TEAM_B_COL = "#2F4472"
 #    A perfectly uniform team (all same skill) has std=0 and loses nothing.
 #
 #  STAGE 2 — Logistic Win Probability
-#    P(A wins) = 1 / (1 + 10 ^ (−(ETS_A − ETS_B) / K))    where K = 7
+#    P(A wins) = 1 / (1 + 10 ^ (−(AdjA − AdjB) / K))    where K = 7
 #
-#    This is a sigmoid (S-curve) that maps any ETS difference to a win
+#    This is a sigmoid (S-curve) that maps any Adj difference to a win
 #    probability between 0% and 100%. K controls how steep the curve is:
 #    a larger K flattens it (skill matters less), a smaller K steepens it.
 #    K = 7 was chosen so that the most extreme possible matchup —
@@ -57,7 +57,7 @@ TEAM_B_COL = "#2F4472"
 #    produces exactly 84.9%, keeping all outputs below the 85% ceiling.
 #
 #  KEY PROPERTIES
-#    • Same ETS on both sides → always exactly 50%
+#    • Same Adj on both sides → always exactly 50%
 #    • Symmetric: P(A wins) + P(B wins) = 100% always
 #    • Carry penalty: [10,2,2,2,2,2] vs [3,3,4,4,3,3] → even team is favourite
 #    • Hard cap: win% never exceeds 95.1% regardless of input
@@ -73,9 +73,9 @@ def effective_team_skill(skills: list, alpha: float = ALPHA) -> float:
 
 
 def win_chance_teams(skills_a: list, skills_b: list, alpha: float = ALPHA) -> float:
-    ets_a = effective_team_skill(skills_a, alpha)
-    ets_b = effective_team_skill(skills_b, alpha)
-    return 1.0 / (1.0 + 10.0 ** (-(ets_a - ets_b) / K))
+    adj_a = effective_team_skill(skills_a, alpha)
+    adj_b = effective_team_skill(skills_b, alpha)
+    return 1.0 / (1.0 + 10.0 ** (-(adj_a - adj_b) / K))
 
 
 def balance_score_from_wc(wc: float) -> float:
@@ -133,8 +133,8 @@ def matchmake_6v6(players_df: pd.DataFrame, alpha: float = ALPHA):
         ta_p = [g_players[i] for i in idx_a]
         tb_p = [g_players[i] for i in idx_b]
 
-        ets_a = effective_team_skill(ta_s, alpha)
-        ets_b = effective_team_skill(tb_s, alpha)
+        adj_a = effective_team_skill(ta_s, alpha)
+        adj_b = effective_team_skill(tb_s, alpha)
         mn    = m + 1
 
         matches.append({
@@ -143,9 +143,9 @@ def matchmake_6v6(players_df: pd.DataFrame, alpha: float = ALPHA):
             "Team B Avg":     round(float(np.mean(tb_s)), 2),
             "Team A Std":     round(float(np.std(ta_s)),  2),
             "Team B Std":     round(float(np.std(tb_s)),  2),
-            "ETS A":          round(ets_a, 2),
-            "ETS B":          round(ets_b, 2),
-            "ETS Diff":       round(abs(ets_a - ets_b), 2),
+            "AdjA":          round(adj_a, 2),
+            "AdjB":          round(adj_b, 2),
+            "Adj Diff":       round(abs(adj_a - adj_b), 2),
             "Win % (A)":      round(wc * 100, 2),
             "Win % (B)":      round((1 - wc) * 100, 2),
             "Balance Score":  round(bs * 100, 2),
@@ -242,20 +242,20 @@ def chart_ets_curve():
     """Show how the variance penalty works across different std values."""
     std_vals = np.linspace(0, 4.5, 200)
     mean_val = 5.0
-    ets_vals = mean_val - ALPHA * std_vals
+    adj_vals = mean_val - ALPHA * std_vals
 
     fig, ax = _fig_style()
-    ax.fill_between(std_vals, ets_vals, mean_val, alpha=0.15, color=WINE)
-    ax.plot(std_vals, ets_vals, color=WINE_GLOW, linewidth=2.5, label="ETS (penalised)")
+    ax.fill_between(std_vals, adj_vals, mean_val, alpha=0.15, color=WINE)
+    ax.plot(std_vals, adj_vals, color=WINE_GLOW, linewidth=2.5, label="Adj (penalised)")
     ax.axhline(mean_val, color=GOLD, linewidth=1.5, linestyle="--", label=f"Raw mean = {mean_val}")
     ax.set_xlabel("Team Skill Std Dev  (spread of player skill)", color=TEXT_SEC, fontsize=9)
-    ax.set_ylabel("Effective Team Skill (ETS)", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Effective Team Skill (Adj)", color=TEXT_SEC, fontsize=9)
 
     # annotate two example points
     for std, label in [(0, "All equal\n(no penalty)"), (2.98, "Carry team\n[10,2,2,2,2,2]")]:
         ets = mean_val - ALPHA * std
         ax.scatter([std], [ets], color=GOLD, s=60, zorder=5)
-        ax.annotate(f"std={std:.1f}\nETS={ets:.2f}", xy=(std, ets),
+        ax.annotate(f"std={std:.1f}\nAdj={ets:.2f}", xy=(std, ets),
                     xytext=(std + 0.2, ets - 0.35),
                     color=CREAM, fontsize=8,
                     arrowprops=dict(arrowstyle="->", color=TEXT_SEC, lw=1))
@@ -266,7 +266,7 @@ def chart_ets_curve():
 
 
 def chart_win_curve():
-    """S-curve: ETS difference → win probability."""
+    """S-curve: Adj difference → win probability."""
     diffs = np.linspace(-9, 9, 300)
     probs = 1 / (1 + 10 ** (-diffs / K))
 
@@ -278,7 +278,7 @@ def chart_win_curve():
     ax.axhline(95.1, color=TEXT_SEC, linewidth=0.8, linestyle=":", alpha=0.6)
     ax.text(8.5, 96.5, "95.1% cap (K=7)", color=TEXT_SEC, fontsize=7, ha="right")
     ax.axvline(0, color=BORDER, linewidth=1)
-    ax.set_xlabel("ETS_A − ETS_B  (positive = Team A stronger)", color=TEXT_SEC, fontsize=9)
+    ax.set_xlabel("AdjA − AdjB  (positive = Team A stronger)", color=TEXT_SEC, fontsize=9)
     ax.set_ylabel("Win Probability for Team A (%)", color=TEXT_SEC, fontsize=9)
     ax.set_ylim(4, 100)
     ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
@@ -303,9 +303,9 @@ def chart_team_comparison(match_row, roster_df):
     fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(7, fig_h), sharey=False)
     fig.patch.set_facecolor(BG_PANEL)
 
-    for ax, rows, color, label, ets_val, win_val in [
-        (ax_a, ta_rows, TEAM_A_COL, "Team A", match_row["ETS A"], match_row["Win % (A)"]),
-        (ax_b, tb_rows, TEAM_B_COL, "Team B", match_row["ETS B"], match_row["Win % (B)"]),
+    for ax, rows, color, label, adj_val, win_val in [
+        (ax_a, ta_rows, TEAM_A_COL, "Team A", match_row["AdjA"], match_row["Win % (A)"]),
+        (ax_b, tb_rows, TEAM_B_COL, "Team B", match_row["AdjB"], match_row["Win % (B)"]),
     ]:
         ax.set_facecolor(BG_PANEL)
         # Shorten player names to avoid overflow
@@ -315,7 +315,7 @@ def chart_team_comparison(match_row, roster_df):
         bars = ax.barh(names, skills, color=color, height=bar_h, edgecolor=BG_DARK, linewidth=0.4)
         ax.set_xlim(0, 12.5)
         ax.set_xlabel("Skill", color=TEXT_SEC, fontsize=7.5)
-        ax.set_title(f"{label}  |  ETS {ets_val:.2f}  |  Win% {win_val:.1f}%",
+        ax.set_title(f"{label}  |  Adj {adj_val:.2f}  |  Win% {win_val:.1f}%",
                      color=TEXT_PRI, fontsize=8, pad=5)
         ax.tick_params(colors=TEXT_SEC, labelsize=lbl_fs)
         ax.spines["top"].set_visible(False);  ax.spines["right"].set_visible(False)
@@ -381,7 +381,7 @@ def chart_balance_overview(match_df):
 
 
 def chart_ets_vs_avg(match_df):
-    """Scatter: raw avg vs ETS for every team. Fixed size — scales naturally via alpha + sizing."""
+    """Scatter: raw avg vs Adj for every team. Fixed size — scales naturally via alpha + sizing."""
     n   = len(match_df)
     # Shrink dots and add transparency when many points overlap
     dot_size  = max(25, 80 - n * 1.5)
@@ -395,25 +395,25 @@ def chart_ets_vs_avg(match_df):
     ax.spines["top"].set_visible(False);   ax.spines["right"].set_visible(False)
 
     for _, row in match_df.iterrows():
-        ax.scatter(row["Team A Avg"], row["ETS A"], color=WINE_GLOW,
+        ax.scatter(row["Team A Avg"], row["AdjA"], color=WINE_GLOW,
                    s=dot_size, alpha=dot_alpha, zorder=4, linewidths=0)
-        ax.scatter(row["Team B Avg"], row["ETS B"], color="#5577CC",
+        ax.scatter(row["Team B Avg"], row["AdjB"], color="#5577CC",
                    s=dot_size, alpha=dot_alpha, zorder=4, linewidths=0)
-        ax.plot([row["Team A Avg"], row["ETS A"]], [row["ETS A"], row["ETS A"]],
+        ax.plot([row["Team A Avg"], row["AdjA"]], [row["AdjA"], row["AdjA"]],
                 color=BORDER, linewidth=0.5, alpha=0.5, zorder=3)
 
-    all_vals = pd.concat([match_df[c] for c in ["Team A Avg","Team B Avg","ETS A","ETS B"]])
+    all_vals = pd.concat([match_df[c] for c in ["Team A Avg","Team B Avg","AdjA","AdjB"]])
     lo, hi = all_vals.min() - 0.4, all_vals.max() + 0.4
     ax.plot([lo, hi], [lo, hi], color=GOLD, linewidth=1.2, linestyle="--")
     ax.set_xlabel("Raw Average Skill", color=TEXT_SEC, fontsize=9)
-    ax.set_ylabel("Effective Team Skill (ETS)", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Effective Team Skill (Adj)", color=TEXT_SEC, fontsize=9)
     ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
 
     ax.legend(
         handles=[
             mpatches.Patch(color=WINE_GLOW, label="Team A"),
             mpatches.Patch(color="#5577CC",  label="Team B"),
-            mpatches.Patch(color=GOLD,       label="ETS = Avg (no penalty)"),
+            mpatches.Patch(color=GOLD,       label="Adj = Avg (no penalty)"),
         ],
         frameon=False, labelcolor=TEXT_SEC, fontsize=7.5)
     fig.tight_layout(pad=0.8)
@@ -477,7 +477,7 @@ def chart_std_comparison(match_df):
 
 
 def chart_win_heatmap():
-    """10x10 heatmap of win% for every integer ETS matchup."""
+    """10x10 heatmap of win% for every integer Adj matchup."""
     skills = np.arange(1, 11)
     grid   = np.zeros((10, 10))
     for i, a in enumerate(skills):
@@ -504,8 +504,8 @@ def chart_win_heatmap():
     ax.set_yticks(range(10))
     ax.set_xticklabels(range(1, 11), color=TEXT_SEC, fontsize=8)
     ax.set_yticklabels(range(1, 11), color=TEXT_SEC, fontsize=8)
-    ax.set_xlabel("Team B Average Skill (ETS)", color=TEXT_SEC, fontsize=9)
-    ax.set_ylabel("Team A Average Skill (ETS)", color=TEXT_SEC, fontsize=9)
+    ax.set_xlabel("Team B Average Skill (Adj)", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Team A Average Skill (Adj)", color=TEXT_SEC, fontsize=9)
     ax.tick_params(colors=TEXT_SEC)
     ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
     ax.spines["top"].set_color(BORDER);    ax.spines["right"].set_color(BORDER)
@@ -529,8 +529,8 @@ def chart_carry_penalty_demo():
     ]
     labels   = [s[0] for s in scenarios]
     means    = [np.mean(s[1]) for s in scenarios]
-    ets_vals = [effective_team_skill(s[1]) for s in scenarios]
-    penalties= [m - e for m, e in zip(means, ets_vals)]
+    adj_vals = [effective_team_skill(s[1]) for s in scenarios]
+    penalties= [m - e for m, e in zip(means, adj_vals)]
     bar_colors = [WINE if "Carry" in l or "High" in l else "#2F4472" if "Even" in l else GOLD
                   for l in labels]
 
@@ -541,7 +541,7 @@ def chart_carry_penalty_demo():
     x  = np.arange(len(labels))
     w  = 0.3
     b1 = ax.bar(x - w/2, means,    width=w, label="Raw Mean",  color=GOLD,    alpha=0.55, edgecolor=BG_DARK, linewidth=0.5)
-    b2 = ax.bar(x + w/2, ets_vals, width=w, label="ETS (after penalty)", color=bar_colors, edgecolor=BG_DARK, linewidth=0.5)
+    b2 = ax.bar(x + w/2, adj_vals, width=w, label="Adj (after penalty)", color=bar_colors, edgecolor=BG_DARK, linewidth=0.5)
 
     for bar, p in zip(b2, penalties):
         if p > 0.02:
@@ -561,7 +561,7 @@ def chart_carry_penalty_demo():
 
 
 def chart_ets_penalty_breakdown(match_df):
-    """Stacked bar: ETS + penalty for every team in every match."""
+    """Stacked bar: Adj + penalty for every team in every match."""
     n = len(match_df)
     row_h = 0.55
     fig_h = max(3.5, n * row_h * 2 + 1.5)
@@ -575,17 +575,17 @@ def chart_ets_penalty_breakdown(match_df):
     for i, (_, row) in enumerate(match_df.iterrows()):
         base = i * 2.2
         # Team A
-        ax.barh(base + 0.5, row["ETS A"], height=0.4,
-                color=WINE, edgecolor=BG_DARK, linewidth=0.4, label="ETS A" if i == 0 else "")
-        ax.barh(base + 0.5, row["Team A Avg"] - row["ETS A"],
-                left=row["ETS A"], height=0.4,
+        ax.barh(base + 0.5, row["AdjA"], height=0.4,
+                color=WINE, edgecolor=BG_DARK, linewidth=0.4, label="AdjA" if i == 0 else "")
+        ax.barh(base + 0.5, row["Team A Avg"] - row["AdjA"],
+                left=row["AdjA"], height=0.4,
                 color=WINE_DARK, alpha=0.7, edgecolor=BG_DARK, linewidth=0.4,
                 label="Variance penalty A" if i == 0 else "")
         # Team B
-        ax.barh(base, row["ETS B"], height=0.4,
-                color="#2F4472", edgecolor=BG_DARK, linewidth=0.4, label="ETS B" if i == 0 else "")
-        ax.barh(base, row["Team B Avg"] - row["ETS B"],
-                left=row["ETS B"], height=0.4,
+        ax.barh(base, row["AdjB"], height=0.4,
+                color="#2F4472", edgecolor=BG_DARK, linewidth=0.4, label="AdjB" if i == 0 else "")
+        ax.barh(base, row["Team B Avg"] - row["AdjB"],
+                left=row["AdjB"], height=0.4,
                 color="#1a2a4a", alpha=0.7, edgecolor=BG_DARK, linewidth=0.4,
                 label="Variance penalty B" if i == 0 else "")
         y_pos.extend([base, base + 0.5])
@@ -759,7 +759,7 @@ st.markdown(f"""
   .skill-fill-a {{ display:inline-block; height:6px; background:{WINE}; border-radius:3px; }}
   .skill-fill-b {{ display:inline-block; height:6px; background:#2F4472; border-radius:3px; }}
 
-  /* ── ETS badge ── */
+  /* ── AdjBadge ── */
   .ets-badge {{
     display: inline-block; font-size: 0.74rem; font-weight: 700;
     padding: 2px 8px; border-radius: 20px;
@@ -798,7 +798,7 @@ with st.sidebar:
     st.markdown(f"""
 <div class="formula-box">
   <div class="label">Stage 1 — Effective Team Skill</div>
-  <span class="eq">ETS = mean(skills) − 0.35 × std(skills)</span>
+  <span class="eq">Adj = mean(skills) − 0.35 × std(skills)</span>
   <p>
     Every team gets a score that reflects not just <i>how skilled</i> they are on average,
     but <i>how evenly distributed</i> that skill is.<br><br>
@@ -811,12 +811,12 @@ with st.sidebar:
 
 <div class="formula-box">
   <div class="label">Stage 2 — Win Probability</div>
-  <span class="eq">P(A) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 7))</span>
+  <span class="eq">P(A) = 1 / (1 + 10^(−(AdjA − AdjB) / 7))</span>
   <p>
-    Maps the ETS gap between teams onto a probability between 0% and 100%
-    using an S-shaped curve. When ETS_A = ETS_B, the result is exactly 50%.<br><br>
+    Maps the Adj gap between teams onto a probability between 0% and 100%
+    using an S-shaped curve. When AdjA = AdjB, the result is exactly 50%.<br><br>
     The divisor <b>7</b> controls the curve's steepness. A smaller value produces
-    a steeper curve where even a 1-point ETS gap yields a 58% win probability,
+    a steeper curve where even a 1-point Adj gap yields a 58% win probability,
     making skill differences feel meaningful. The absolute worst-case matchup —
     a team of all-10s vs a team of all-1s — produces 95.1%.
   </p>
@@ -833,7 +833,7 @@ with st.sidebar:
     st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.7rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin: 1rem 0 0.5rem'>Formula Properties</div>", unsafe_allow_html=True)
 
     props = [
-        ("50% when ETS_A = ETS_B", True),
+        ("50% when AdjA = AdjB", True),
         ("Symmetric: P(A)+P(B) = 100%", True),
         ("Carry teams penalised fairly", True),
         ("Hard cap: max 95.1%", True),
@@ -925,13 +925,13 @@ with tab_generate:
 
 # ── Formula Explorer ─────────────────────────────────────────────────────────
 with tab_formula:
-    # ── Section 1: Stage 1 — ETS ────────────────────────────────────────────
-    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.75rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.6rem'>Stage 1 — Effective Team Skill (ETS)</div>", unsafe_allow_html=True)
+    # ── Section 1: Stage 1 — Adj ────────────────────────────────────────────
+    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.75rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.6rem'>Stage 1 — Effective Team Skill (Adj)</div>", unsafe_allow_html=True)
     st.markdown(f"""<div class="callout">
-<b>ETS = mean(skills) − 0.35 × std(skills)</b><br><br>
+<b>Adj = mean(skills) − 0.35 × std(skills)</b><br><br>
 Every team receives a score that reflects both <i>how skilled</i> it is on average and <i>how evenly that skill is distributed</i>.
 The standard deviation (std) measures internal spread — a perfectly uniform team has std = 0 and suffers no penalty.
-A team with one standout player surrounded by weak ones carries a high std, so its ETS is discounted below its raw mean.
+A team with one standout player surrounded by weak ones carries a high std, so its Adj is discounted below its raw mean.
 This reflects the gameplay reality that all six players compete simultaneously: the star cannot be everywhere at once.
 </div>""", unsafe_allow_html=True)
 
@@ -940,15 +940,15 @@ This reflects the gameplay reality that all six players compete simultaneously: 
         st.markdown("**Variance Penalty Curve**")
         st.pyplot(chart_ets_curve(), use_container_width=True)
         st.markdown(f"""<div class="callout" style="font-size:0.82rem">
-The red line shows ETS falling below the raw mean (gold dashed) as a team's internal skill spread grows.
+The red line shows Adj falling below the raw mean (gold dashed) as a team's internal skill spread grows.
 A homogeneous team (std = 0, left edge) loses nothing. The carry team example [10,2,2,2,2,2] has std ≈ 3.0,
-causing an ETS deduction of 0.35 × 3.0 = 1.04 points — equivalent to dropping a full skill tier.
+causing an Adj deduction of 0.35 × 3.0 = 1.04 points — equivalent to dropping a full skill tier.
 </div>""", unsafe_allow_html=True)
     with fe2:
         st.markdown("**Carry Penalty in Practice**")
         st.pyplot(chart_carry_penalty_demo(), use_container_width=True)
         st.markdown(f"""<div class="callout" style="font-size:0.82rem">
-Gold bars show raw team means; coloured bars show ETS after the variance deduction.
+Gold bars show raw team means; coloured bars show AdjAfter the variance deduction.
 The annotations mark the size of each penalty. The <b style="color:{WINE_GLOW}">Carry team</b> and <b style="color:{WINE_GLOW}">High-end team</b>
 both lose meaningful ground despite their raw average looking competitive.
 The <b style="color:#5577CC">Even team</b>'s low spread earns it a near-zero penalty.
@@ -959,10 +959,10 @@ The <b style="color:#5577CC">Even team</b>'s low spread earns it a near-zero pen
     # ── Section 2: Stage 2 — Win probability ───────────────────────────────
     st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.75rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.6rem'>Stage 2 — Logistic Win Probability (K = 7)</div>", unsafe_allow_html=True)
     st.markdown(f"""<div class="callout">
-<b>P(A wins) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 7))</b><br><br>
-The ETS difference is passed through a logistic (S-shaped) function that maps any value to a probability between 0% and 100%.
-When both teams have equal ETS the result is always exactly 50%. The divisor K = 7 sets the steepness:
-at this value a 1-point ETS gap already yields a 58% win probability, so individual skill differences feel meaningful.
+<b>P(A wins) = 1 / (1 + 10^(−(AdjA − AdjB) / 7))</b><br><br>
+The Adj difference is passed through a logistic (S-shaped) function that maps any value to a probability between 0% and 100%.
+When both teams have equal Adj the result is always exactly 50%. The divisor K = 7 sets the steepness:
+at this value a 1-point Adj gap already yields a 58% win probability, so individual skill differences feel meaningful.
 The function is symmetric — Team A's probability plus Team B's always equals 100%.
 </div>""", unsafe_allow_html=True)
 
@@ -971,8 +971,8 @@ The function is symmetric — Team A's probability plus Team B's always equals 1
         st.markdown("**Win Probability S-Curve**")
         st.pyplot(chart_win_curve(), use_container_width=True)
         st.markdown(f"""<div class="callout" style="font-size:0.82rem">
-The curve maps any ETS difference (x-axis) to Team A's win probability (y-axis).
-The vertical gold line marks the 50% point (equal ETS). The dotted line shows the 95.1% cap — the absolute
+The curve maps any Adj difference (x-axis) to Team A's win probability (y-axis).
+The vertical gold line marks the 50% point (equal Adj). The dotted line shows the 95.1% cap — the absolute
 maximum produced when a full all-10 team faces a full all-1 team with K = 7.
 Note how the curve steepens in the middle and flattens at extremes: a 1-point gap near 50% matters more than
 a 1-point gap near 90%.
@@ -981,7 +981,7 @@ a 1-point gap near 90%.
         st.markdown("**Win % Heatmap — All Skill Matchups**")
         st.pyplot(chart_win_heatmap(), use_container_width=True)
         st.markdown(f"""<div class="callout" style="font-size:0.82rem">
-Each cell shows Team A's win probability when Team A has the row's average ETS and Team B has the column's.
+Each cell shows Team A's win probability when Team A has the row's average AdjAnd Team B has the column's.
 The 50% diagonal (gold labels) runs top-left to bottom-right. Deep wine = Team A dominant;
 deep blue = Team B dominant. This table assumes homogeneous teams (std = 0), so it shows the pure
 logistic effect without any variance penalty applied.
@@ -1008,8 +1008,8 @@ logistic effect without any variance penalty applied.
         st.markdown(f"<div style='color:#5577CC;font-size:0.8rem;font-weight:700;margin-bottom:0.4rem'>TEAM B</div>", unsafe_allow_html=True)
         tb_vals = [st.slider(f"Player B{i+1}", 1, 10, [3,3,4,4,3,3][i], key=f"tb{i}") for i in range(6)]
 
-    ets_a_live = effective_team_skill(ta_vals, alpha_live)
-    ets_b_live = effective_team_skill(tb_vals, alpha_live)
+    adj_a_live = effective_team_skill(ta_vals, alpha_live)
+    adj_b_live = effective_team_skill(tb_vals, alpha_live)
     wc_live    = win_chance_teams(ta_vals, tb_vals, alpha_live)
     bs_live    = balance_score_from_wc(wc_live)
 
@@ -1017,7 +1017,7 @@ logistic effect without any variance penalty applied.
     for col, val, lbl in [
         (fm1, f"{np.mean(ta_vals):.2f}", "Team A Raw Avg"),
         (fm2, f"{np.mean(tb_vals):.2f}", "Team B Raw Avg"),
-        (fm3, f"{ets_a_live:.2f} vs {ets_b_live:.2f}", "ETS A vs B"),
+        (fm3, f"{adj_a_live:.2f} vs {adj_b_live:.2f}", "AdjA vs B"),
         (fm4, f"{wc_live*100:.1f}%", "Team A Win %"),
         (fm5, f"{bs_live*100:.1f}%", "Balance Score"),
     ]:
@@ -1028,9 +1028,9 @@ logistic effect without any variance penalty applied.
     penalty_b = alpha_live * np.std(tb_vals)
     st.markdown(f"""<div class="callout">
 <b>α = {alpha_live}</b> &nbsp;(matchmaking default is {ALPHA} — adjust above to match your own calculation)<br><br>
-<b>Team A</b>: mean = {np.mean(ta_vals):.2f}, std = {np.std(ta_vals):.2f} → penalty = {alpha_live} × {np.std(ta_vals):.2f} = {penalty_a:.2f} → ETS = <b>{ets_a_live:.2f}</b><br>
-<b>Team B</b>: mean = {np.mean(tb_vals):.2f}, std = {np.std(tb_vals):.2f} → penalty = {alpha_live} × {np.std(tb_vals):.2f} = {penalty_b:.2f} → ETS = <b>{ets_b_live:.2f}</b><br>
-ETS gap = {abs(ets_a_live - ets_b_live):.2f} → win probability = 1 / (1 + 10^(−{abs(ets_a_live - ets_b_live):.2f} / 7)) = <b>{wc_live*100:.1f}%</b>
+<b>Team A</b>: mean = {np.mean(ta_vals):.2f}, std = {np.std(ta_vals):.2f} → penalty = {alpha_live} × {np.std(ta_vals):.2f} = {penalty_a:.2f} → Adj = <b>{adj_a_live:.2f}</b><br>
+<b>Team B</b>: mean = {np.mean(tb_vals):.2f}, std = {np.std(tb_vals):.2f} → penalty = {alpha_live} × {np.std(tb_vals):.2f} = {penalty_b:.2f} → Adj = <b>{adj_b_live:.2f}</b><br>
+Adj gap = {abs(adj_a_live - adj_b_live):.2f} → win probability = 1 / (1 + 10^(−{abs(adj_a_live - adj_b_live):.2f} / 7)) = <b>{wc_live*100:.1f}%</b>
 </div>""", unsafe_allow_html=True)
 
 
@@ -1061,7 +1061,7 @@ if players_df is not None:
     with ov1:
         st.markdown("**Skill Frequency Table**")
         fd = frequency_table(players_df).copy()
-        fd["ETS (uniform team)"] = fd["Skill"].apply(
+        fd["Adj (uniform team)"] = fd["Skill"].apply(
             lambda s: f"{effective_team_skill([int(s)]*6):.2f}"
         )
         fd["Win % vs all-5s"]    = fd["Skill"].apply(
@@ -1140,21 +1140,21 @@ if players_df is not None:
 
             oc3, oc4 = st.columns(2)
             with oc3:
-                st.markdown("**ETS vs Raw Average**")
+                st.markdown("**Adj vs Raw Average**")
                 st.caption("Points below the diagonal were penalised for uneven skill spread. The further below, the larger the variance deduction.")
                 st.pyplot(chart_ets_vs_avg(match_df), use_container_width=True)
             with oc4:
                 st.markdown("**Skill Spread (Std Dev) per Team**")
-                st.caption("Lower std = more uniform team. High-std teams pay a larger ETS penalty. Dashed line = low-variance target.")
+                st.caption("Lower std = more uniform team. High-std teams pay a larger Adj penalty. Dashed line = low-variance target.")
                 st.pyplot(chart_std_comparison(match_df), use_container_width=True)
 
-            st.markdown("**ETS & Variance Penalty Breakdown per Team**")
-            st.caption("Each row shows a team's ETS (solid) plus how much was deducted as a variance penalty (faded). Longer penalty section = more imbalanced team composition.")
+            st.markdown("**Adj & Variance Penalty Breakdown per Team**")
+            st.caption("Each row shows a team's Adj (solid) plus how much was deducted as a variance penalty (faded). Longer penalty section = more imbalanced team composition.")
             st.pyplot(chart_ets_penalty_breakdown(match_df), use_container_width=True)
 
             # ── Summary table ───────────────────────────────────────────────
             st.markdown(f"<div style='color:{CREAM};font-size:1rem;font-weight:700;margin:1rem 0 0.3rem'>Match Summary Table</div>", unsafe_allow_html=True)
-            st.caption("ETS = Effective Team Skill. Lower std → ETS closer to raw avg. Higher std → ETS is discounted.")
+            st.caption("Adj = Effective Team Skill. Lower std → Adj closer to raw avg. Higher std → Adj is discounted.")
 
             def _cb(v):
                 if v >= 95:   return f"background-color:#1a3a1a;color:#6aab6a"
@@ -1188,7 +1188,7 @@ if players_df is not None:
 
                 with st.expander(
                     f"{badge}  Match {mn}  ·  "
-                    f"ETS  A={m_row['ETS A']:.2f}  B={m_row['ETS B']:.2f}  ·  "
+                    f"AdjA={m_row['AdjA']:.2f}  AdjB={m_row['AdjB']:.2f}  ·  "
                     f"Win%  A={m_row['Win % (A)']:.1f}%  ·  "
                     f"Balance {bs:.1f}%"
                 ):
@@ -1205,7 +1205,7 @@ if players_df is not None:
                             f"<b style='color:{WINE_GLOW}'>Team A</b>&nbsp;&nbsp;"
                             f"avg <b>{m_row['Team A Avg']:.2f}</b>&nbsp; "
                             f"std <b>{m_row['Team A Std']:.2f}</b>&nbsp; "
-                            f'<span class="ets-badge">ETS {m_row["ETS A"]:.2f}</span>'
+                            f'<span class="ets-badge">Adj {m_row["AdjA"]:.2f}</span>'
                             f"</div>",
                             unsafe_allow_html=True,
                         )
@@ -1226,7 +1226,7 @@ if players_df is not None:
                             f"<b style='color:#5577CC'>Team B</b>&nbsp;&nbsp;"
                             f"avg <b>{m_row['Team B Avg']:.2f}</b>&nbsp; "
                             f"std <b>{m_row['Team B Std']:.2f}</b>&nbsp; "
-                            f'<span class="ets-badge ets-badge-b">ETS {m_row["ETS B"]:.2f}</span>'
+                            f'<span class="ets-badge ets-badge-b">Adj {m_row["AdjB"]:.2f}</span>'
                             f"</div>",
                             unsafe_allow_html=True,
                         )
@@ -1267,8 +1267,8 @@ else:
 
 st.markdown(
     f'<div style="color:{TEXT_SEC};font-size:0.75rem;text-align:center;margin-top:2rem;padding-top:1rem;border-top:1px solid {BORDER}">'
-    f'ETS = mean(skills) − 0.35 × std(skills) &nbsp;·&nbsp; '
-    f'P(A) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 12)) &nbsp;·&nbsp; '
+    f'Adj = mean(skills) − 0.35 × std(skills) &nbsp;·&nbsp; '
+    f'P(A) = 1 / (1 + 10^(−(AdjA − AdjB) / 7)) &nbsp;·&nbsp; '
     f'Max win% = 84.9% &nbsp;·&nbsp; Team splits: C(12,6) = 924 combinations evaluated per match'
     f'</div>',
     unsafe_allow_html=True,
