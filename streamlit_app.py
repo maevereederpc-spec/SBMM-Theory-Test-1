@@ -3,388 +3,657 @@ import pandas as pd
 import numpy as np
 import random
 import io
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyBboxPatch
 from itertools import combinations
 
+matplotlib.use("Agg")
+
 # =============================================================================
-#  WIN FORMULA — Variance-Adjusted Elo Logistic
+#  DESIGN TOKENS
+# =============================================================================
+WINE       = "#722F37"
+WINE_LIGHT = "#9B4A54"
+WINE_DARK  = "#4A1520"
+WINE_GLOW  = "#C0666F"
+GOLD       = "#C9A84C"
+CREAM      = "#F5ECD7"
+BG_DARK    = "#0F0A0B"
+BG_MID     = "#1A1115"
+BG_CARD    = "#221519"
+BG_PANEL   = "#2A1B1E"
+BORDER     = "#3D2226"
+TEXT_PRI   = "#F0E4E6"
+TEXT_SEC   = "#9A7A7E"
+TEAM_A_COL = "#722F37"
+TEAM_B_COL = "#2F4472"
+
+# =============================================================================
+#  WIN FORMULA — Variance-Adjusted Logistic Model
 #
-#  PROBLEM SOLVED:  Two teams with the same raw average skill are NOT equal if
-#  one team is distribution-heavy (one star + five liabilities) vs. one team
-#  of all-average players.  In 6v6 gameplay:
-#    - The five weak players on the "carry team" cannot be propped up by one
-#      good player simultaneously — they play in parallel, get exploited, and
-#      create drag the carry cannot overcome.
-#    - Research on team sports (Bradley-Terry models, LoL MMR analysis) confirms
-#      that variance in individual skill is negatively correlated with team win
-#      rate when mean skill is held constant.
+#  Two-stage process:
 #
-#  SOLUTION — two-stage formula:
+#  STAGE 1 — Effective Team Skill (ETS)
+#    ETS = mean(skills) − α × std(skills)     where α = 0.35
 #
-#  Step 1 — Effective Team Skill (ETS):
-#    ETS = mean(skills) - α × std(skills)
+#    The standard deviation of a team's skill levels is a direct measure
+#    of internal imbalance. A team with one standout player and several weak
+#    players will have a high std — but in a 6v6 format, all six players
+#    compete simultaneously. The strong player cannot compensate for five
+#    players losing their individual matchups at the same time.
+#    Subtracting α×std "discounts" the team's mean by how uneven it is.
+#    A perfectly uniform team (all same skill) has std=0 and loses nothing.
 #
-#    α = 0.35  (variance penalty coefficient)
-#    Derived so that a carry team [10,2,2,2,2,2] vs an even team [3,3,4,4,3,3]
-#    (identical raw averages) correctly predicts the even team as favourite.
-#    A homogeneous team (all same skill) has std=0 and incurs no penalty.
+#  STAGE 2 — Logistic Win Probability
+#    P(A wins) = 1 / (1 + 10 ^ (−(ETS_A − ETS_B) / K))    where K = 12
 #
-#  Step 2 — Elo Logistic Win Probability:
-#    P(A wins) = 1 / (1 + 10 ^ (-(ETS_A - ETS_B) / K))
+#    This is a sigmoid (S-curve) that maps any ETS difference to a win
+#    probability between 0% and 100%. K controls how steep the curve is:
+#    a larger K flattens it (skill matters less), a smaller K steepens it.
+#    K = 12 was chosen so that the most extreme possible matchup —
+#    a full team of skill-10 players vs a full team of skill-1 players —
+#    produces exactly 84.9%, keeping all outputs below the 85% ceiling.
 #
-#    K = 12  (calibrated so the hard maximum win% — all-10 vs all-1 — is 84.9%)
-#
-#  Why ETS = mean - α×std?
-#    - Mirrors Modern Portfolio Theory: "risk-adjusted return" penalises
-#      volatility in exactly this form (Sharpe ratio denominator).
-#    - In gameplay terms: every 1-point of std below the mean represents a
-#      player who will be overmatched in individual skill matchups, creating
-#      net-negative contributions that the carry cannot compensate for.
-#    - Keeps the formula linear in skill, fully interpretable, and reversible.
-#    - Preserves the Elo framework so the 85% cap remains intact.
-#
-#  Properties:
-#    ✅ Same avg, same std → identical ETS → 50% win chance
-#    ✅ Same avg, higher std → lower ETS → below 50% win chance
-#    ✅ All-homogeneous teams: std=0, degenerates to pure Elo (no penalty)
-#    ✅ Max win% still capped at 84.9%  (all-10 vs all-1, both std=0)
-#    ✅ Symmetric: P(A vs B) + P(B vs A) = 1.0 always
+#  KEY PROPERTIES
+#    • Same ETS on both sides → always exactly 50%
+#    • Symmetric: P(A wins) + P(B wins) = 100% always
+#    • Carry penalty: [10,2,2,2,2,2] vs [3,3,4,4,3,3] → even team is favourite
+#    • Hard cap: win% never exceeds 84.9% regardless of input
 # =============================================================================
 
-K     = 12    # Elo scaling constant
-ALPHA = 0.35  # Variance penalty coefficient
+K     = 12
+ALPHA = 0.35
 
 
 def effective_team_skill(skills: list, alpha: float = ALPHA) -> float:
-    """
-    Variance-adjusted team strength.
-    ETS = mean(skills) - alpha * std(skills)
-    A perfectly homogeneous team has std=0 and suffers no penalty.
-    """
     arr = np.array(skills, dtype=float)
     return float(arr.mean() - alpha * arr.std())
 
 
 def win_chance_teams(skills_a: list, skills_b: list, alpha: float = ALPHA) -> float:
-    """Full pipeline: ETS for both teams → Elo logistic win probability."""
     ets_a = effective_team_skill(skills_a, alpha)
     ets_b = effective_team_skill(skills_b, alpha)
     return 1.0 / (1.0 + 10.0 ** (-(ets_a - ets_b) / K))
 
 
 def balance_score_from_wc(wc: float) -> float:
-    """1.0 = perfectly balanced (50/50), 0.0 = completely one-sided."""
     return 1.0 - abs(wc - 0.5)
 
 
 def generate_skill_level() -> int:
-    """Normal distribution centred on 5, clipped to [1, 10]."""
     return max(1, min(10, int(round(random.gauss(5, 1.8)))))
 
 
 # =============================================================================
-#  6v6 MATCHMAKING  —  Optimised split within sorted groups of 12
+#  MATCHMAKING — Optimal 6v6 split via exhaustive search
 #
-#  Old approach: snake draft (designed to balance means, ignores variance).
-#  New approach: evaluate all C(12,6) = 924 possible splits, choose the one
-#  with the highest balance score under the variance-adjusted formula.
-#
-#  At 924 combinations this is trivially fast (< 1ms per group).
-#  Groups are still formed by sorting players and taking consecutive 12-player
-#  windows, so skill-similar players always compete against each other.
+#  For each group of 12 players (sorted by skill, so similar-skill players
+#  always face each other), all C(12,6) = 924 possible 6-player splits are
+#  evaluated. The split whose win probability is closest to 50% — as judged
+#  by the variance-adjusted formula — is chosen. This guarantees the globally
+#  optimal team composition, not just a heuristic estimate.
 # =============================================================================
 
 def optimal_split(group_skills: list, group_players: list, alpha: float = ALPHA):
-    """
-    Brute-force best 6v6 split of 12 players under variance-adjusted Elo.
-    Returns (team_a_indices, team_b_indices, win_chance_a, balance_score).
-    """
-    indices = list(range(12))
-    best_bs, best_combo = -1.0, None
-
+    indices   = list(range(12))
+    best_bs   = -1.0
+    best_combo = None
     for combo in combinations(indices, 6):
         ta = [group_skills[i] for i in combo]
         tb = [group_skills[i] for i in indices if i not in combo]
-        wc = win_chance_teams(ta, tb, alpha)
-        bs = balance_score_from_wc(wc)
+        bs = balance_score_from_wc(win_chance_teams(ta, tb, alpha))
         if bs > best_bs:
-            best_bs = bs
+            best_bs    = bs
             best_combo = combo
-
     idx_a = list(best_combo)
     idx_b = [i for i in indices if i not in best_combo]
-    ta_skills = [group_skills[i] for i in idx_a]
-    tb_skills = [group_skills[i] for i in idx_b]
-    wc = win_chance_teams(ta_skills, tb_skills, alpha)
+    ta    = [group_skills[i] for i in idx_a]
+    tb    = [group_skills[i] for i in idx_b]
+    wc    = win_chance_teams(ta, tb, alpha)
     return idx_a, idx_b, wc, balance_score_from_wc(wc)
 
 
 def matchmake_6v6(players_df: pd.DataFrame, alpha: float = ALPHA):
-    """
-    Partition players into 6v6 matches using optimised variance-aware splits.
-    Returns (match summaries, team rosters, benched player names).
-    """
-    df = players_df.copy().sort_values("Skill", ascending=False).reset_index(drop=True)
-    n = len(df)
-    n_matches = n // 12
-    benched = list(df.iloc[n_matches * 12:]["Player"])
-
+    df        = players_df.copy().sort_values("Skill", ascending=False).reset_index(drop=True)
+    n_matches = len(df) // 12
+    benched   = list(df.iloc[n_matches * 12:]["Player"])
     matches, rosters = [], []
 
     for m in range(n_matches):
-        group = df.iloc[m * 12 : (m + 1) * 12].reset_index(drop=True)
+        group     = df.iloc[m * 12 : (m + 1) * 12].reset_index(drop=True)
         g_skills  = list(group["Skill"].astype(int))
         g_players = list(group["Player"])
 
         idx_a, idx_b, wc, bs = optimal_split(g_skills, g_players, alpha)
 
-        ta_skills  = [g_skills[i]  for i in idx_a]
-        tb_skills  = [g_skills[i]  for i in idx_b]
-        ta_players = [g_players[i] for i in idx_a]
-        tb_players = [g_players[i] for i in idx_b]
+        ta_s = [g_skills[i]  for i in idx_a]
+        tb_s = [g_skills[i]  for i in idx_b]
+        ta_p = [g_players[i] for i in idx_a]
+        tb_p = [g_players[i] for i in idx_b]
 
-        ets_a = effective_team_skill(ta_skills, alpha)
-        ets_b = effective_team_skill(tb_skills, alpha)
-        avg_a = np.mean(ta_skills)
-        avg_b = np.mean(tb_skills)
-        std_a = np.std(ta_skills)
-        std_b = np.std(tb_skills)
+        ets_a = effective_team_skill(ta_s, alpha)
+        ets_b = effective_team_skill(tb_s, alpha)
+        mn    = m + 1
 
-        match_num = m + 1
         matches.append({
-            "Match #":          match_num,
-            "Team A Avg":       round(avg_a, 2),
-            "Team B Avg":       round(avg_b, 2),
-            "Team A Std":       round(std_a, 2),
-            "Team B Std":       round(std_b, 2),
-            "ETS A":            round(ets_a, 2),
-            "ETS B":            round(ets_b, 2),
-            "ETS Diff":         round(abs(ets_a - ets_b), 2),
-            "Win % (Team A)":   round(wc * 100, 2),
-            "Win % (Team B)":   round((1 - wc) * 100, 2),
-            "Balance Score":    round(bs * 100, 2),
+            "Match":          mn,
+            "Team A Avg":     round(float(np.mean(ta_s)), 2),
+            "Team B Avg":     round(float(np.mean(tb_s)), 2),
+            "Team A Std":     round(float(np.std(ta_s)),  2),
+            "Team B Std":     round(float(np.std(tb_s)),  2),
+            "ETS A":          round(ets_a, 2),
+            "ETS B":          round(ets_b, 2),
+            "ETS Diff":       round(abs(ets_a - ets_b), 2),
+            "Win % (A)":      round(wc * 100, 2),
+            "Win % (B)":      round((1 - wc) * 100, 2),
+            "Balance Score":  round(bs * 100, 2),
         })
-
-        for p, s in zip(ta_players, ta_skills):
-            rosters.append({"Match #": match_num, "Team": "A", "Player": p, "Skill": s})
-        for p, s in zip(tb_players, tb_skills):
-            rosters.append({"Match #": match_num, "Team": "B", "Player": p, "Skill": s})
+        for p, s in zip(ta_p, ta_s):
+            rosters.append({"Match": mn, "Team": "A", "Player": p, "Skill": s})
+        for p, s in zip(tb_p, tb_s):
+            rosters.append({"Match": mn, "Team": "B", "Player": p, "Skill": s})
 
     return matches, rosters, benched
 
 
 # =============================================================================
-#  EXCEL HELPERS
+#  EXCEL / DATA HELPERS
 # =============================================================================
 
 def read_excel_frequency(file) -> pd.DataFrame:
     df = pd.read_excel(file)
     df.columns = [c.strip().title() for c in df.columns]
     if "Skill" not in df.columns or "Frequency" not in df.columns:
-        raise ValueError("Excel file must have 'Skill' and 'Frequency' columns.")
+        raise ValueError("Excel must have 'Skill' and 'Frequency' columns.")
     df["Skill"]     = pd.to_numeric(df["Skill"],     errors="coerce").clip(1, 10).fillna(5).astype(int)
     df["Frequency"] = pd.to_numeric(df["Frequency"], errors="coerce").fillna(0).astype(int)
     df = df[df["Frequency"] > 0]
     if df.empty:
-        raise ValueError("No valid rows — check Frequency values are positive integers.")
+        raise ValueError("No valid rows — check that Frequency values are positive integers.")
     rows = []
     for _, row in df.iterrows():
         rows.extend([int(row["Skill"])] * int(row["Frequency"]))
-    out = pd.DataFrame({"Skill": rows})
+    out          = pd.DataFrame({"Skill": rows})
     out["Player"] = [f"Player_{i+1:03d}" for i in range(len(out))]
     return out[["Player", "Skill"]]
 
 
-def frequency_table_from_players(players_df: pd.DataFrame) -> pd.DataFrame:
-    freq = players_df["Skill"].value_counts().sort_index().reset_index()
-    freq.columns = ["Skill", "Frequency"]
-    return freq
+def frequency_table(players_df: pd.DataFrame) -> pd.DataFrame:
+    f = players_df["Skill"].value_counts().sort_index().reset_index()
+    f.columns = ["Skill", "Frequency"]
+    return f
 
 
 def create_sample_excel() -> bytes:
-    data = {
-        "Skill":     [1,  2,  3,  4,  5,  6,  7,  8,  9, 10],
-        "Frequency": [2,  3,  6, 10, 14, 12,  8,  5,  3,  1],
-    }
+    data = {"Skill": list(range(1, 11)),
+            "Frequency": [2, 3, 6, 10, 14, 12, 8, 5, 3, 1]}
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        pd.DataFrame(data).to_excel(writer, index=False, sheet_name="Players")
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        pd.DataFrame(data).to_excel(w, index=False, sheet_name="Players")
     return buf.getvalue()
 
 
 def results_to_excel(matches, rosters, benched, players_df) -> bytes:
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        pd.DataFrame(matches).to_excel(writer, index=False, sheet_name="Match Summaries")
-        pd.DataFrame(rosters).to_excel(writer, index=False, sheet_name="Team Rosters")
-        frequency_table_from_players(players_df).to_excel(
-            writer, index=False, sheet_name="Skill Frequency")
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        pd.DataFrame(matches).to_excel(w, index=False, sheet_name="Match Summaries")
+        pd.DataFrame(rosters).to_excel(w, index=False, sheet_name="Team Rosters")
+        frequency_table(players_df).to_excel(w, index=False, sheet_name="Skill Frequency")
         if benched:
-            pd.DataFrame({"Benched Players": benched}).to_excel(
-                writer, index=False, sheet_name="Benched")
+            pd.DataFrame({"Benched": benched}).to_excel(w, index=False, sheet_name="Benched")
     return buf.getvalue()
 
 
-def skill_distribution_chart(df: pd.DataFrame) -> pd.DataFrame:
-    counts = df["Skill"].value_counts().sort_index().reset_index()
-    counts.columns = ["Skill Level", "Player Count"]
-    return counts
+# =============================================================================
+#  MATPLOTLIB CHART HELPERS
+# =============================================================================
+
+def _fig_style():
+    fig, ax = plt.subplots()
+    fig.patch.set_facecolor(BG_CARD)
+    ax.set_facecolor(BG_CARD)
+    ax.tick_params(colors=TEXT_SEC, labelsize=9)
+    ax.spines["bottom"].set_color(BORDER)
+    ax.spines["left"].set_color(BORDER)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    return fig, ax
+
+
+def chart_skill_distribution(players_df: pd.DataFrame):
+    counts = [players_df[players_df["Skill"] == s].shape[0] for s in range(1, 11)]
+    fig, ax = _fig_style()
+    bars = ax.bar(range(1, 11), counts, color=WINE, edgecolor=WINE_DARK, linewidth=0.8, width=0.7)
+    for bar, c in zip(bars, counts):
+        if c > 0:
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    str(c), ha="center", va="bottom", color=TEXT_PRI, fontsize=9, fontweight="bold")
+    ax.set_xticks(range(1, 11))
+    ax.set_xlabel("Skill Level", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Player Count", color=TEXT_SEC, fontsize=9)
+    ax.yaxis.label.set_color(TEXT_SEC)
+    fig.tight_layout()
+    return fig
+
+
+def chart_ets_curve():
+    """Show how the variance penalty works across different std values."""
+    std_vals = np.linspace(0, 4.5, 200)
+    mean_val = 5.0
+    ets_vals = mean_val - ALPHA * std_vals
+
+    fig, ax = _fig_style()
+    ax.fill_between(std_vals, ets_vals, mean_val, alpha=0.15, color=WINE)
+    ax.plot(std_vals, ets_vals, color=WINE_GLOW, linewidth=2.5, label="ETS (penalised)")
+    ax.axhline(mean_val, color=GOLD, linewidth=1.5, linestyle="--", label=f"Raw mean = {mean_val}")
+    ax.set_xlabel("Team Skill Std Dev  (spread of player skill)", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Effective Team Skill (ETS)", color=TEXT_SEC, fontsize=9)
+
+    # annotate two example points
+    for std, label in [(0, "All equal\n(no penalty)"), (2.98, "Carry team\n[10,2,2,2,2,2]")]:
+        ets = mean_val - ALPHA * std
+        ax.scatter([std], [ets], color=GOLD, s=60, zorder=5)
+        ax.annotate(f"std={std:.1f}\nETS={ets:.2f}", xy=(std, ets),
+                    xytext=(std + 0.2, ets - 0.35),
+                    color=CREAM, fontsize=8,
+                    arrowprops=dict(arrowstyle="->", color=TEXT_SEC, lw=1))
+
+    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def chart_win_curve():
+    """S-curve: ETS difference → win probability."""
+    diffs = np.linspace(-9, 9, 300)
+    probs = 1 / (1 + 10 ** (-diffs / K))
+
+    fig, ax = _fig_style()
+    ax.fill_between(diffs, 0.5, probs, where=probs >= 0.5, alpha=0.12, color=WINE)
+    ax.fill_between(diffs, probs, 0.5, where=probs <  0.5, alpha=0.12, color=TEAM_B_COL)
+    ax.plot(diffs, probs * 100, color=WINE_GLOW, linewidth=2.5)
+    ax.axhline(50, color=GOLD, linewidth=1, linestyle="--")
+    ax.axhline(85, color=TEXT_SEC, linewidth=0.8, linestyle=":", alpha=0.6)
+    ax.text(8.5, 86, "85% cap", color=TEXT_SEC, fontsize=7, ha="right")
+    ax.axvline(0, color=BORDER, linewidth=1)
+    ax.set_xlabel("ETS_A − ETS_B", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Win Probability for Team A (%)", color=TEXT_SEC, fontsize=9)
+    ax.set_ylim(10, 95)
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    fig.tight_layout()
+    return fig
+
+
+def chart_team_comparison(match_row, roster_df):
+    """Horizontal bar comparison of both teams' player skills."""
+    mn      = match_row["Match"]
+    ta_rows = roster_df[(roster_df["Match"] == mn) & (roster_df["Team"] == "A")].sort_values("Skill", ascending=False)
+    tb_rows = roster_df[(roster_df["Match"] == mn) & (roster_df["Team"] == "B")].sort_values("Skill", ascending=False)
+
+    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(7, 2.8), sharey=False)
+    fig.patch.set_facecolor(BG_PANEL)
+
+    for ax, rows, color, label, ets_val, win_val in [
+        (ax_a, ta_rows, TEAM_A_COL, "Team A", match_row["ETS A"], match_row["Win % (A)"]),
+        (ax_b, tb_rows, TEAM_B_COL, "Team B", match_row["ETS B"], match_row["Win % (B)"]),
+    ]:
+        ax.set_facecolor(BG_PANEL)
+        names  = [r["Player"].replace("Player_", "P") for _, r in rows.iterrows()]
+        skills = [r["Skill"] for _, r in rows.iterrows()]
+
+        bars = ax.barh(names, skills, color=color, height=0.55, edgecolor=BG_DARK, linewidth=0.5)
+        ax.set_xlim(0, 11)
+        ax.set_xlabel("Skill", color=TEXT_SEC, fontsize=8)
+        ax.set_title(f"{label}  |  ETS {ets_val:.2f}  |  Win% {win_val:.1f}%",
+                     color=TEXT_PRI, fontsize=8.5, pad=6)
+        ax.tick_params(colors=TEXT_SEC, labelsize=7.5)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["bottom"].set_color(BORDER)
+        ax.spines["left"].set_color(BORDER)
+
+        for bar, skill in zip(bars, skills):
+            ax.text(skill + 0.15, bar.get_y() + bar.get_height()/2,
+                    str(skill), va="center", color=TEXT_PRI, fontsize=8, fontweight="bold")
+
+    fig.tight_layout(pad=1.2)
+    return fig
+
+
+def chart_balance_overview(match_df):
+    """Horizontal bar per match coloured by balance score."""
+    fig, ax = _fig_style()
+    fig.set_size_inches(6, max(2.5, len(match_df) * 0.55))
+    fig.patch.set_facecolor(BG_CARD)
+    ax.set_facecolor(BG_CARD)
+
+    labels = [f"Match {r['Match']}" for _, r in match_df.iterrows()]
+    scores = match_df["Balance Score"].tolist()
+    colors = [
+        "#3a7d44" if s >= 95 else
+        "#6aab6a" if s >= 80 else
+        "#c9a84c" if s >= 60 else
+        WINE
+        for s in scores
+    ]
+
+    bars = ax.barh(labels[::-1], scores[::-1], color=colors[::-1],
+                   height=0.55, edgecolor=BG_DARK, linewidth=0.5)
+    ax.axvline(95, color=TEXT_SEC, linewidth=0.8, linestyle=":", alpha=0.5)
+    ax.set_xlim(40, 105)
+    ax.set_xlabel("Balance Score (%)", color=TEXT_SEC, fontsize=9)
+
+    for bar, s in zip(bars, scores[::-1]):
+        ax.text(s + 0.3, bar.get_y() + bar.get_height()/2,
+                f"{s:.1f}%", va="center", color=TEXT_PRI, fontsize=8)
+
+    legend_patches = [
+        mpatches.Patch(color="#3a7d44", label="Perfect (≥95%)"),
+        mpatches.Patch(color="#6aab6a", label="Good (80–95%)"),
+        mpatches.Patch(color=GOLD,      label="Fair (60–80%)"),
+        mpatches.Patch(color=WINE,      label="Poor (<60%)"),
+    ]
+    ax.legend(handles=legend_patches, frameon=False, labelcolor=TEXT_SEC,
+              fontsize=7.5, loc="lower right")
+    fig.tight_layout()
+    return fig
+
+
+def chart_ets_vs_avg(match_df):
+    """Scatter: raw avg vs ETS for every team, coloured by team."""
+    fig, ax = _fig_style()
+    fig.set_size_inches(5.5, 4)
+
+    for _, row in match_df.iterrows():
+        ax.scatter(row["Team A Avg"], row["ETS A"], color=WINE_GLOW, s=70, zorder=4)
+        ax.scatter(row["Team B Avg"], row["ETS B"], color="#5577CC", s=70, zorder=4)
+        ax.plot([row["Team A Avg"], row["ETS A"]], [row["ETS A"], row["ETS A"]],
+                color=BORDER, linewidth=0.6, zorder=3)
+
+    lo = min(match_df[["Team A Avg","Team B Avg","ETS A","ETS B"]].min()) - 0.3
+    hi = max(match_df[["Team A Avg","Team B Avg","ETS A","ETS B"]].max()) + 0.3
+    ax.plot([lo, hi], [lo, hi], color=GOLD, linewidth=1.2, linestyle="--",
+            label="ETS = Raw Avg (no penalty)")
+    ax.set_xlabel("Raw Average Skill", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Effective Team Skill (ETS)", color=TEXT_SEC, fontsize=9)
+    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=8)
+    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+
+    ta_patch = mpatches.Patch(color=WINE_GLOW, label="Team A")
+    tb_patch = mpatches.Patch(color="#5577CC",  label="Team B")
+    ax.legend(handles=[ta_patch, tb_patch, mpatches.Patch(color=GOLD, label="ETS = Avg baseline")],
+              frameon=False, labelcolor=TEXT_SEC, fontsize=7.5)
+    fig.tight_layout()
+    return fig
+
+
+def chart_std_comparison(match_df):
+    """Grouped bar: Team A std vs Team B std per match."""
+    fig, ax = _fig_style()
+    fig.set_size_inches(6, max(2.5, len(match_df) * 0.6))
+    fig.patch.set_facecolor(BG_CARD)
+
+    x  = np.arange(len(match_df))
+    w  = 0.35
+    ax.bar(x - w/2, match_df["Team A Std"], width=w, label="Team A",
+           color=WINE, edgecolor=BG_DARK, linewidth=0.5)
+    ax.bar(x + w/2, match_df["Team B Std"], width=w, label="Team B",
+           color="#2F4472", edgecolor=BG_DARK, linewidth=0.5)
+    ax.axhline(1.5, color=GOLD, linewidth=1, linestyle="--", alpha=0.7)
+    ax.text(len(match_df) - 0.5, 1.6, "Low-variance target", color=GOLD, fontsize=7, ha="right")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"M{r['Match']}" for _, r in match_df.iterrows()], color=TEXT_SEC, fontsize=8)
+    ax.set_ylabel("Skill Std Dev", color=TEXT_SEC, fontsize=9)
+    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=8)
+    fig.tight_layout()
+    return fig
 
 
 # =============================================================================
-#  STREAMLIT UI
+#  PAGE CONFIG & GLOBAL CSS
 # =============================================================================
 
-st.set_page_config(page_title="6v6 Matchmaking System", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="6v6 Matchmaking", page_icon="⚔️", layout="wide")
 
-st.markdown("""
+st.markdown(f"""
 <style>
-    .title-block {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        padding: 2rem 2.5rem; border-radius: 12px; margin-bottom: 1.5rem;
-    }
-    .title-block h1 { color: #e94560; margin: 0; font-size: 2.2rem; }
-    .title-block p  { color: #a8b2d8; margin: 0.5rem 0 0; font-size: 1rem; }
+  /* ── Global background ── */
+  .stApp {{ background-color: {BG_DARK}; }}
+  section[data-testid="stSidebar"] {{ background-color: {BG_MID} !important; }}
+  section[data-testid="stSidebar"] * {{ color: {TEXT_SEC}; }}
 
-    .metric-card {
-        background: #1e1e2e; border: 1px solid #2d2d44; border-radius: 10px;
-        padding: 1rem 1.5rem; text-align: center; height: 90px;
-        display: flex; flex-direction: column; justify-content: center;
-    }
-    .metric-card h3 { color: #e94560; font-size: 1.7rem; margin: 0; }
-    .metric-card p  { color: #a8b2d8; margin: 0.2rem 0 0; font-size: 0.82rem; }
+  /* ── Hide Streamlit chrome ── */
+  #MainMenu, footer, header {{ visibility: hidden; }}
 
-    .formula-block {
-        background: #0d1117; border: 1px solid #30363d; border-radius: 10px;
-        padding: 1.1rem 1.4rem; margin: 0.6rem 0;
-    }
-    .formula-block h4 { color: #e94560; margin: 0 0 0.5rem; font-size: 0.95rem; letter-spacing: 0.05em; }
-    .formula-block .eq {
-        font-family: monospace; font-size: 1rem; color: #58a6ff;
-        background: #161b22; padding: 0.55rem 0.9rem; border-radius: 5px;
-        border-left: 3px solid #e94560; margin: 0.4rem 0; display: block;
-    }
-    .formula-block p { color: #8b949e; font-size: 0.84rem; margin: 0.3rem 0 0; }
+  /* ── Typography ── */
+  html, body, [class*="css"] {{ color: {TEXT_PRI}; }}
+  h1,h2,h3,h4 {{ color: {TEXT_PRI} !important; }}
 
-    .callout {
-        background: #161b22; border-left: 4px solid #e94560;
-        border-radius: 0 6px 6px 0; padding: 0.8rem 1.2rem; margin: 0.6rem 0;
-        color: #cdd9e5; font-size: 0.88rem;
-    }
-    .callout b { color: #e94560; }
+  /* ── Title banner ── */
+  .title-banner {{
+    background: linear-gradient(135deg, {WINE_DARK} 0%, {BG_MID} 60%, {BG_DARK} 100%);
+    border: 1px solid {WINE};
+    border-left: 5px solid {WINE};
+    border-radius: 10px;
+    padding: 1.6rem 2rem;
+    margin-bottom: 1.5rem;
+  }}
+  .title-banner h1 {{ color: {CREAM} !important; margin: 0; font-size: 2rem; letter-spacing: 0.02em; }}
+  .title-banner p  {{ color: {TEXT_SEC}; margin: 0.4rem 0 0; font-size: 0.9rem; }}
 
-    .team-a {
-        background: #0d2137; border-left: 3px solid #58a6ff;
-        border-radius: 5px; padding: 0.35rem 0.8rem; margin: 2px 0;
-        font-size: 0.85rem; color: #cdd9e5; display: flex; justify-content: space-between;
-    }
-    .team-b {
-        background: #1a0d2e; border-left: 3px solid #bc8cff;
-        border-radius: 5px; padding: 0.35rem 0.8rem; margin: 2px 0;
-        font-size: 0.85rem; color: #cdd9e5; display: flex; justify-content: space-between;
-    }
-    .skill-bar-fill-a { display: inline-block; height: 8px; background: #58a6ff;
-                        border-radius: 4px; vertical-align: middle; }
-    .skill-bar-fill-b { display: inline-block; height: 8px; background: #bc8cff;
-                        border-radius: 4px; vertical-align: middle; }
-    .skill-bar-bg     { display: inline-block; width: 100px; height: 8px;
-                        background: #2d2d44; border-radius: 4px; vertical-align: middle; }
+  /* ── Metric card ── */
+  .metric-card {{
+    background: {BG_CARD};
+    border: 1px solid {BORDER};
+    border-top: 3px solid {WINE};
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    text-align: center;
+    min-height: 80px;
+  }}
+  .metric-card .val {{ color: {CREAM}; font-size: 1.9rem; font-weight: 700; margin: 0; line-height: 1.1; }}
+  .metric-card .lbl {{ color: {TEXT_SEC}; font-size: 0.78rem; margin: 0.2rem 0 0; }}
 
-    .ets-badge {
-        display: inline-block; background: #1a2740; color: #58a6ff;
-        border: 1px solid #2d4a6a; border-radius: 20px;
-        padding: 2px 10px; font-size: 0.78rem; font-weight: 600;
-    }
+  /* ── Formula box ── */
+  .formula-box {{
+    background: {BG_MID};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 0.5rem 0;
+  }}
+  .formula-box .eq {{
+    font-family: "Courier New", monospace;
+    font-size: 0.95rem;
+    color: {CREAM};
+    background: {BG_DARK};
+    border-left: 3px solid {WINE};
+    padding: 0.5rem 0.9rem;
+    border-radius: 4px;
+    display: block;
+    margin: 0.5rem 0;
+  }}
+  .formula-box .label {{ color: {WINE_GLOW}; font-size: 0.78rem; font-weight: 700;
+                         letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.2rem; }}
+  .formula-box p {{ color: {TEXT_SEC}; font-size: 0.84rem; margin: 0.3rem 0 0; line-height: 1.5; }}
+
+  /* ── Info callout ── */
+  .callout {{
+    background: {BG_PANEL};
+    border-left: 4px solid {WINE};
+    border-radius: 0 6px 6px 0;
+    padding: 0.7rem 1rem;
+    margin: 0.5rem 0;
+    color: {TEXT_SEC};
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }}
+  .callout b {{ color: {CREAM}; }}
+
+  /* ── Property tags ── */
+  .prop-row {{ display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.4rem 0; }}
+  .prop-tag {{
+    background: {BG_PANEL}; border: 1px solid {BORDER};
+    color: {TEXT_SEC}; font-size: 0.76rem; padding: 3px 10px;
+    border-radius: 20px; white-space: nowrap;
+  }}
+  .prop-tag.good {{ border-color: {WINE}; color: {WINE_GLOW}; }}
+
+  /* ── Team row ── */
+  .team-row {{
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.3rem 0.75rem; margin: 2px 0; border-radius: 4px; font-size: 0.84rem;
+  }}
+  .team-row-a {{ background: {BG_PANEL}; border-left: 3px solid {WINE}; }}
+  .team-row-b {{ background: #121c2e; border-left: 3px solid #2F4472; }}
+  .team-row .pname {{ color: {TEXT_PRI}; }}
+  .team-row .pskill {{ color: {CREAM}; font-weight: 700; }}
+  .skill-track {{ display:inline-block; width:80px; height:6px; background:{BORDER};
+                  border-radius:3px; vertical-align:middle; margin: 0 6px; }}
+  .skill-fill-a {{ display:inline-block; height:6px; background:{WINE}; border-radius:3px; }}
+  .skill-fill-b {{ display:inline-block; height:6px; background:#2F4472; border-radius:3px; }}
+
+  /* ── ETS badge ── */
+  .ets-badge {{
+    display: inline-block; font-size: 0.74rem; font-weight: 700;
+    padding: 2px 8px; border-radius: 20px;
+    background: {WINE_DARK}; color: {WINE_GLOW};
+    border: 1px solid {WINE}; vertical-align: middle;
+  }}
+  .ets-badge-b {{
+    background: #0d1a30; color: #7090CC; border-color: #2F4472;
+  }}
+
+  /* ── Tab styling ── */
+  button[data-baseweb="tab"] {{ color: {TEXT_SEC} !important; }}
+  button[data-baseweb="tab"][aria-selected="true"] {{
+    color: {CREAM} !important;
+    border-bottom-color: {WINE} !important;
+  }}
+
+  /* ── Divider ── */
+  hr {{ border-color: {BORDER} !important; }}
 </style>
 
-<div class="title-block">
-  <h1>6v6 Skill-Based Matchmaking</h1>
-  <p>Variance-adjusted Elo &nbsp;·&nbsp; Carry penalty &nbsp;·&nbsp; Optimal team splits &nbsp;·&nbsp; Skill frequency input</p>
+<div class="title-banner">
+  <h1>⚔️ 6v6 Skill-Based Matchmaking</h1>
+  <p>Variance-adjusted win formula &nbsp;·&nbsp; Carry penalty &nbsp;·&nbsp; Optimal team composition &nbsp;·&nbsp; Skill frequency input</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+# =============================================================================
+#  SIDEBAR
+# =============================================================================
+
 with st.sidebar:
-    st.markdown("### The Asymmetry Problem")
-    st.markdown("""
+    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.7rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.8rem'>How The Formula Works</div>", unsafe_allow_html=True)
+
+    st.markdown(f"""
+<div class="formula-box">
+  <div class="label">Stage 1 — Effective Team Skill</div>
+  <span class="eq">ETS = mean(skills) − 0.35 × std(skills)</span>
+  <p>
+    Every team gets a score that reflects not just <i>how skilled</i> they are on average,
+    but <i>how evenly distributed</i> that skill is.<br><br>
+    <b>std(skills)</b> measures how spread out the player skills are.
+    A team of six skill-5 players has std = 0 — no penalty.
+    A carry team of [10, 2, 2, 2, 2, 2] has std = 2.98 — a meaningful deduction.<br><br>
+    The coefficient <b>0.35</b> sets how harshly imbalance is punished.
+  </p>
+</div>
+
+<div class="formula-box">
+  <div class="label">Stage 2 — Win Probability</div>
+  <span class="eq">P(A) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 12))</span>
+  <p>
+    Maps the ETS gap between teams onto a probability between 0% and 100%
+    using an S-shaped curve. When ETS_A = ETS_B, the result is exactly 50%.<br><br>
+    The divisor <b>12</b> controls the curve's steepness and was chosen so that
+    the absolute worst-case matchup — a team of all-10s vs a team of all-1s — 
+    produces 84.9%, keeping every outcome below the 85% ceiling.
+  </p>
+</div>
+
 <div class="callout">
-<b>Old formula flaw:</b> Team [10,2,2,2,2,2] and team [3,3,4,4,3,3] have the same average (3.33), so the old Elo model calls it 50/50.
-<br><br>
-<b>In reality:</b> the five skill-2 players get destroyed in their individual matchups. The skill-10 player cannot be everywhere at once. The even team wins more often.
+  <b>Why this matters:</b> A team with one great player and five weak ones
+  has the same raw average as a team of all-average players — but the five weak 
+  players each lose their individual matchups simultaneously. The carry cannot 
+  be everywhere at once. This formula correctly penalises that imbalance.
 </div>
 """, unsafe_allow_html=True)
 
-    st.markdown("### The Fix — Variance Penalty")
-    st.markdown("""
-<div class="formula-block">
-<h4>STEP 1 — Effective Team Skill (ETS)</h4>
-<span class="eq">ETS = mean(skills) − α × std(skills)</span>
-<p>α = 0.35 &nbsp;·&nbsp; std = 0 for homogeneous teams (no penalty)</p>
-</div>
-<div class="formula-block">
-<h4>STEP 2 — Elo Logistic Win %</h4>
-<span class="eq">P(A) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 12))</span>
-<p>K = 12 &nbsp;·&nbsp; max win% = 84.9% (all-10 vs all-1)</p>
-</div>
-""", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.7rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin: 1rem 0 0.5rem'>Formula Properties</div>", unsafe_allow_html=True)
 
-    st.markdown("**Why this formula?**")
-    st.markdown("""
-- **α × std** is the same penalty used in Modern Portfolio Theory to discount risky assets — here, a "risky" team is one whose weak players create exploitable holes
-- A team of six skill-5 players (std=0) loses zero ETS to the penalty
-- A carry team [10,2,2,2,2,2] (std=2.98) is penalised 1.04 skill points below its mean
-- The Elo logistic is symmetric, bounded, and battle-tested across competitive games
-- α=0.35 was calibrated on the worst realistic asymmetry case to produce ~8–10% win% swing
-""")
+    props = [
+        ("50% when ETS_A = ETS_B", True),
+        ("Symmetric: P(A)+P(B) = 100%", True),
+        ("Carry teams penalised fairly", True),
+        ("Hard cap: max 84.9%", True),
+        ("Uniform teams: zero penalty", True),
+    ]
+    tags = "".join(
+        f'<span class="prop-tag{"  good" if g else ""}">{p}</span>' for p, g in props
+    )
+    st.markdown(f'<div class="prop-row">{tags}</div>', unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("### Matchmaking Method")
-    st.markdown("""
-**Optimised split (not just snake draft)**
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.7rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem'>Matchmaking Method</div>", unsafe_allow_html=True)
+    st.markdown(f"""<div style='color:{TEXT_SEC};font-size:0.83rem;line-height:1.6'>
+All <b style='color:{CREAM}'>924 possible 6v6 splits</b> are evaluated for each group of 12 players.
+The split whose win probability is closest to 50% — under the variance-adjusted formula — is selected.
+Players are grouped by skill before splitting, so you only compete against similarly-rated opponents.
+</div>""", unsafe_allow_html=True)
 
-For each group of 12 players, all **924 possible 6v6 splits** are evaluated. The split with the highest balance score under the variance-adjusted formula is chosen. This guarantees the globally optimal team composition, not just a heuristic approximation.
-""")
-
-    st.divider()
+    st.markdown("<hr>", unsafe_allow_html=True)
     st.download_button(
-        "Download Sample Excel",
+        "⬇ Download Sample Excel",
         data=create_sample_excel(),
         file_name="sample_skill_frequency.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
     )
-    st.caption("Columns: Skill (1–10) and Frequency. Need 12+ players.")
+    st.markdown(f"<div style='color:{TEXT_SEC};font-size:0.75rem;margin-top:0.3rem'>Needs <b>Skill</b> (1–10) and <b>Frequency</b> columns. Min 12 players per match.</div>", unsafe_allow_html=True)
 
-# ── Input tabs ────────────────────────────────────────────────────────────────
-tab_upload, tab_generate, tab_explorer = st.tabs([
-    "Upload Excel", "Generate Random Players", "Formula Explorer"
+
+# =============================================================================
+#  INPUT TABS
+# =============================================================================
+
+tab_upload, tab_generate, tab_formula = st.tabs([
+    "  📂  Upload Excel  ",
+    "  🎲  Generate Players  ",
+    "  📐  Formula Explorer  ",
 ])
 
 players_df = None
 
+# ── Upload ─────────────────────────────────────────────────────────────────
 with tab_upload:
-    st.markdown("Upload an Excel file with **Skill** and **Frequency** columns. Minimum 12 players for one match.")
-    uploaded = st.file_uploader("Choose .xlsx file", type=["xlsx", "xls"])
+    st.markdown(f"<div style='color:{TEXT_SEC};font-size:0.88rem;margin-bottom:0.8rem'>Upload an Excel file with <b style='color:{CREAM}'>Skill</b> and <b style='color:{CREAM}'>Frequency</b> columns. Each row is a skill tier and the number of players at that level.</div>", unsafe_allow_html=True)
+    uploaded = st.file_uploader("Choose .xlsx file", type=["xlsx", "xls"], label_visibility="collapsed")
     if uploaded:
         try:
             players_df = read_excel_frequency(uploaded)
-            freq_preview = frequency_table_from_players(players_df)
-            total = len(players_df)
-            st.success(
-                f"Loaded **{total} players** — **{total // 12} match(es)** possible, "
-                f"{total % 12} player(s) benched."
-            )
-            st.dataframe(freq_preview, use_container_width=True, hide_index=True)
+            fp         = frequency_table(players_df)
+            total      = len(players_df)
+            st.success(f"Loaded **{total} players** — **{total // 12}** match(es) possible, {total % 12} benched.")
+            st.dataframe(fp, use_container_width=True, hide_index=True, height=260)
         except Exception as e:
             st.error(f"Error: {e}")
 
+# ── Generate ────────────────────────────────────────────────────────────────
 with tab_generate:
-    c_n, c_seed = st.columns([2, 1])
-    with c_n:
+    gc1, gc2 = st.columns([3, 1])
+    with gc1:
         n_players = st.slider("Number of players", 12, 300, 48, step=12,
-                              help="Multiples of 12 = zero bench players.")
-    with c_seed:
-        seed = st.number_input("Random seed", value=42, step=1)
+                              help="Multiples of 12 → zero benched players.")
+    with gc2:
+        seed = st.number_input("Seed", value=42, step=1)
 
-    if st.button("Generate Players", use_container_width=True):
+    if st.button("Generate Players", use_container_width=True, type="primary"):
         random.seed(int(seed))
         skills = [generate_skill_level() for _ in range(n_players)]
         gen_df = pd.DataFrame({
@@ -392,296 +661,295 @@ with tab_generate:
             "Skill":  skills,
         })
         st.session_state["generated_df"] = gen_df
-        freq_gen = frequency_table_from_players(gen_df)
-        st.success(f"Generated **{n_players} players** across {len(freq_gen)} skill levels.")
-        st.dataframe(freq_gen, use_container_width=True, hide_index=True)
+        freq_gen = frequency_table(gen_df)
+        col_tbl, col_chart = st.columns([1, 1])
+        with col_tbl:
+            st.dataframe(freq_gen, use_container_width=True, hide_index=True)
+        with col_chart:
+            st.pyplot(chart_skill_distribution(gen_df), use_container_width=True)
 
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            freq_gen.to_excel(writer, index=False, sheet_name="Players")
-        st.download_button("Download as Skill/Frequency Excel", data=buf.getvalue(),
-                           file_name="generated_skill_frequency.xlsx",
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            freq_gen.to_excel(w, index=False, sheet_name="Players")
+        st.download_button("⬇ Download Skill/Frequency Excel", data=buf.getvalue(),
+                           file_name="generated_players.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     if "generated_df" in st.session_state and players_df is None:
         players_df = st.session_state["generated_df"]
 
-with tab_explorer:
-    st.markdown("### Formula Explorer")
-    st.markdown(
-        "Manually build two teams and compare win probabilities under the "
-        "**old Elo (mean-only)** vs **new variance-adjusted Elo** formula."
-    )
+# ── Formula Explorer ─────────────────────────────────────────────────────────
+with tab_formula:
+    st.markdown(f"<div style='color:{TEXT_SEC};font-size:0.88rem;margin-bottom:1rem'>Visualisations of how the two formula stages behave. Adjust teams manually to see the carry penalty in action.</div>", unsafe_allow_html=True)
 
-    ex_col1, ex_col2 = st.columns(2)
-    with ex_col1:
-        st.markdown("**Team A — enter 6 skill levels**")
-        ta_input = [st.slider(f"Player A{i+1}", 1, 10, [10,2,2,2,2,2][i], key=f"ta{i}") for i in range(6)]
-    with ex_col2:
-        st.markdown("**Team B — enter 6 skill levels**")
-        tb_input = [st.slider(f"Player B{i+1}", 1, 10, [3,3,4,4,3,3][i], key=f"tb{i}") for i in range(6)]
+    fe1, fe2 = st.columns(2)
+    with fe1:
+        st.markdown("**Stage 1 — Variance penalty curve**")
+        st.caption("Shows how ETS drops below raw mean as a team's skill spread increases.")
+        st.pyplot(chart_ets_curve(), use_container_width=True)
+    with fe2:
+        st.markdown("**Stage 2 — Win probability S-curve**")
+        st.caption("Maps any ETS difference to a win probability. Always 50% when gap is zero.")
+        st.pyplot(chart_win_curve(), use_container_width=True)
 
-    alpha_e = st.slider("Variance penalty (α)", 0.0, 0.8, ALPHA, step=0.05,
-                        help="0 = pure Elo. Higher = stronger penalty for uneven teams.")
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown("**Interactive Team Builder — see the carry penalty live**")
+    fi1, fi2 = st.columns(2)
+    with fi1:
+        st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.8rem;font-weight:700;margin-bottom:0.4rem'>TEAM A</div>", unsafe_allow_html=True)
+        ta_vals = [st.slider(f"Player A{i+1}", 1, 10, [10,2,2,2,2,2][i], key=f"ta{i}") for i in range(6)]
+    with fi2:
+        st.markdown(f"<div style='color:#5577CC;font-size:0.8rem;font-weight:700;margin-bottom:0.4rem'>TEAM B</div>", unsafe_allow_html=True)
+        tb_vals = [st.slider(f"Player B{i+1}", 1, 10, [3,3,4,4,3,3][i], key=f"tb{i}") for i in range(6)]
 
-    ets_a   = effective_team_skill(ta_input, alpha_e)
-    ets_b   = effective_team_skill(tb_input, alpha_e)
-    wc_new  = win_chance_teams(ta_input, tb_input, alpha_e)
-    wc_old  = 1.0 / (1.0 + 10.0 ** (-(np.mean(ta_input) - np.mean(tb_input)) / K))
-    bs_new  = balance_score_from_wc(wc_new)
+    ets_a_live = effective_team_skill(ta_vals)
+    ets_b_live = effective_team_skill(tb_vals)
+    wc_live    = win_chance_teams(ta_vals, tb_vals)
+    bs_live    = balance_score_from_wc(wc_live)
 
-    rc1, rc2, rc3, rc4 = st.columns(4)
-    rc1.metric("Team A ETS",          f"{ets_a:.2f}")
-    rc2.metric("Team B ETS",          f"{ets_b:.2f}")
-    rc3.metric("Win % A (new)",       f"{wc_new*100:.1f}%",
-               delta=f"{(wc_new - wc_old)*100:+.1f}% vs old formula")
-    rc4.metric("Balance Score",       f"{bs_new*100:.1f}%")
-
-    st.markdown(f"""
-**Breakdown:**  
-Team A — mean **{np.mean(ta_input):.2f}**, std **{np.std(ta_input):.2f}**, ETS **{ets_a:.2f}** (penalty: {alpha_e * np.std(ta_input):.2f})  
-Team B — mean **{np.mean(tb_input):.2f}**, std **{np.std(tb_input):.2f}**, ETS **{ets_b:.2f}** (penalty: {alpha_e * np.std(tb_input):.2f})  
-Old (mean-only) formula: A wins **{wc_old*100:.1f}%** · New (variance-adjusted): A wins **{wc_new*100:.1f}%**
-""")
-
-    st.markdown("#### Win % Reference Table (same α, all-homogeneous teams, no variance penalty)")
-    skills = list(range(1, 11))
-    ref_df = pd.DataFrame(
-        {f"Avg {sa}": {f"Avg {sb}": f"{win_chance_teams([sa]*6,[sb]*6,alpha_e)*100:.1f}%"
-                       for sb in skills} for sa in skills}
-    )
-    ref_df.index = [f"Avg {s}" for s in skills]
-    ref_df.index.name = "Team A / Team B"
-    st.dataframe(ref_df, use_container_width=True)
-    st.caption("Homogeneous teams (std=0) receive no penalty — this table shows pure Elo behaviour.")
-
-# ── Main dashboard ────────────────────────────────────────────────────────────
-if players_df is not None:
-    st.divider()
-
-    avg_skill = players_df["Skill"].mean()
-    min_skill = int(players_df["Skill"].min())
-    max_skill = int(players_df["Skill"].max())
-    n_possible = len(players_df) // 12
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    for col, val, label in [
-        (c1, len(players_df),               "Total Players"),
-        (c2, f"{avg_skill:.1f}",            "Avg Skill"),
-        (c3, f"{min_skill} to {max_skill}", "Skill Range"),
-        (c4, n_possible,                    "Matches Possible"),
-        (c5, len(players_df) % 12,          "Benched"),
+    fm1, fm2, fm3, fm4, fm5 = st.columns(5)
+    for col, val, lbl in [
+        (fm1, f"{np.mean(ta_vals):.2f}", "Team A Raw Avg"),
+        (fm2, f"{np.mean(tb_vals):.2f}", "Team B Raw Avg"),
+        (fm3, f"{ets_a_live:.2f} vs {ets_b_live:.2f}", "ETS A vs B"),
+        (fm4, f"{wc_live*100:.1f}%", "Team A Win %"),
+        (fm5, f"{bs_live*100:.1f}%", "Balance Score"),
     ]:
-        col.markdown(
-            f'<div class="metric-card"><h3>{val}</h3><p>{label}</p></div>',
-            unsafe_allow_html=True,
-        )
+        col.markdown(f'<div class="metric-card"><div class="val">{val}</div><div class="lbl">{lbl}</div></div>', unsafe_allow_html=True)
 
     st.markdown("")
+    st.markdown(f"""<div class="callout">
+<b>Team A</b>: mean = {np.mean(ta_vals):.2f}, std = {np.std(ta_vals):.2f} → penalty = {ALPHA * np.std(ta_vals):.2f} → ETS = <b>{ets_a_live:.2f}</b><br>
+<b>Team B</b>: mean = {np.mean(tb_vals):.2f}, std = {np.std(tb_vals):.2f} → penalty = {ALPHA * np.std(tb_vals):.2f} → ETS = <b>{ets_b_live:.2f}</b>
+</div>""", unsafe_allow_html=True)
 
-    col_freq, col_dist = st.columns(2)
-    with col_freq:
-        st.markdown("#### Skill Frequency")
-        fd = frequency_table_from_players(players_df).copy()
-        fd["ETS (solo vs avg-5 team)"] = fd["Skill"].apply(
-            lambda s: f"{effective_team_skill([int(s)]*6):.2f} → {win_chance_teams([int(s)]*6,[5]*6)*100:.1f}%"
+
+# =============================================================================
+#  MAIN DASHBOARD — only shown when players are loaded
+# =============================================================================
+
+if players_df is not None:
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    avg_s = players_df["Skill"].mean()
+    min_s = int(players_df["Skill"].min())
+    max_s = int(players_df["Skill"].max())
+    n_pos = len(players_df) // 12
+
+    d1, d2, d3, d4, d5 = st.columns(5)
+    for col, val, lbl in [
+        (d1, len(players_df),               "Total Players"),
+        (d2, f"{avg_s:.1f}",                "Average Skill"),
+        (d3, f"{min_s} – {max_s}",          "Skill Range"),
+        (d4, n_pos,                          "Matches Possible"),
+        (d5, len(players_df) % 12,           "Will Be Benched"),
+    ]:
+        col.markdown(f'<div class="metric-card"><div class="val">{val}</div><div class="lbl">{lbl}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("")
+    ov1, ov2 = st.columns([1, 1])
+    with ov1:
+        st.markdown("**Skill Frequency Table**")
+        fd = frequency_table(players_df).copy()
+        fd["ETS (uniform team)"] = fd["Skill"].apply(
+            lambda s: f"{effective_team_skill([int(s)]*6):.2f}"
         )
-        st.dataframe(fd, use_container_width=True, height=340, hide_index=True)
-    with col_dist:
-        st.markdown("#### Skill Distribution")
-        dist = skill_distribution_chart(players_df)
-        st.bar_chart(dist.set_index("Skill Level"), use_container_width=True, height=320)
+        fd["Win % vs all-5s"]    = fd["Skill"].apply(
+            lambda s: f"{win_chance_teams([int(s)]*6, [5]*6)*100:.1f}%"
+        )
+        st.dataframe(fd, use_container_width=True, height=320, hide_index=True)
+    with ov2:
+        st.markdown("**Skill Distribution**")
+        st.pyplot(chart_skill_distribution(players_df), use_container_width=True)
 
-    st.divider()
-    st.markdown("### Run 6v6 Matchmaking")
+    # ── Matchmaking controls ────────────────────────────────────────────────
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:{CREAM};font-size:1.1rem;font-weight:700;margin-bottom:0.5rem'>Run 6v6 Matchmaking</div>", unsafe_allow_html=True)
 
-    alpha_mm = st.slider(
-        "Variance penalty α (matchmaking)",
-        0.0, 0.8, ALPHA, step=0.05,
-        help="Controls how much uneven skill distribution within a team is penalised. "
-             "0 = pure Elo mean. 0.35 = recommended default.",
-    )
+    ac1, ac2 = st.columns([3, 1])
+    with ac1:
+        alpha_mm = st.slider(
+            "Variance penalty (α)",
+            0.0, 0.80, ALPHA, step=0.05,
+            help="0 = only raw average matters. Higher = harsher carry penalty. 0.35 is the calibrated default.",
+        )
+    with ac2:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        run_btn = st.button("⚔ Generate Matches", use_container_width=True, type="primary")
 
     if len(players_df) < 12:
         st.warning("Need at least 12 players to form one 6v6 match.")
-    else:
-        if st.button("Generate Optimal 6v6 Matches", use_container_width=True, type="primary"):
-            # Clear any stale results from previous app versions before storing new ones
-            for _k in ["matches", "rosters", "benched", "match_src"]:
-                st.session_state.pop(_k, None)
-            with st.spinner("Evaluating all possible team splits (924 per match)..."):
-                matches, rosters, benched = matchmake_6v6(players_df, alpha=alpha_mm)
-            st.session_state["matches"]   = matches
-            st.session_state["rosters"]   = rosters
-            st.session_state["benched"]   = benched
-            st.session_state["match_src"] = players_df.copy()
+    elif run_btn:
+        for k in ["matches", "rosters", "benched", "match_src"]:
+            st.session_state.pop(k, None)
+        with st.spinner("Evaluating all 924 splits per match group…"):
+            matches, rosters, benched = matchmake_6v6(players_df, alpha=alpha_mm)
+        st.session_state.update({
+            "matches": matches, "rosters": rosters,
+            "benched": benched, "match_src": players_df.copy()
+        })
 
+    # ── Results ─────────────────────────────────────────────────────────────
     if "matches" in st.session_state:
         matches   = st.session_state["matches"]
         rosters   = st.session_state["rosters"]
         benched   = st.session_state["benched"]
         src_df    = st.session_state.get("match_src", players_df)
+        match_df  = pd.DataFrame(matches)
+        roster_df = pd.DataFrame(rosters)
 
         if not matches:
             st.warning("No complete 6v6 matches could be formed.")
         else:
-            match_df    = pd.DataFrame(matches)
-            roster_df   = pd.DataFrame(rosters)
-            avg_balance = match_df["Balance Score"].mean()
-            perfect     = int((match_df["Balance Score"] >= 99.0).sum())
+            avg_bs  = match_df["Balance Score"].mean()
+            perfect = int((match_df["Balance Score"] >= 99.0).sum())
 
-            m1, m2, m3, m4 = st.columns(4)
-            for col, val, label in [
-                (m1, len(matches),          "Matches Created"),
-                (m2, f"{avg_balance:.1f}%", "Avg Balance Score"),
-                (m3, perfect,               "Near-Perfect Matches"),
-                (m4, len(benched),          "Benched Players"),
+            r1, r2, r3, r4 = st.columns(4)
+            for col, val, lbl in [
+                (r1, len(matches),          "Matches Created"),
+                (r2, f"{avg_bs:.1f}%",      "Avg Balance Score"),
+                (r3, perfect,               "Near-Perfect (≥99%)"),
+                (r4, len(benched),          "Benched Players"),
             ]:
-                col.markdown(
-                    f'<div class="metric-card"><h3>{val}</h3><p>{label}</p></div>',
-                    unsafe_allow_html=True,
-                )
+                col.markdown(f'<div class="metric-card"><div class="val">{val}</div><div class="lbl">{lbl}</div></div>', unsafe_allow_html=True)
 
             st.markdown("")
-            st.markdown("#### Match Summaries")
-            st.caption(
-                "ETS = Effective Team Skill (mean − α×std). "
-                "A team with higher variance than opponent will show lower ETS than raw avg."
-            )
 
-            def color_balance(val):
-                if val >= 95:   return "background-color:#1a472a; color:#57f287"
-                elif val >= 80: return "background-color:#1e3a1a; color:#a8d5a2"
-                elif val >= 60: return "background-color:#4a3728; color:#fee75c"
-                else:           return "background-color:#4a1428; color:#ed4245"
+            # ── Overview charts ─────────────────────────────────────────────
+            st.markdown(f"<div style='color:{CREAM};font-size:1rem;font-weight:700;margin:0.8rem 0 0.4rem'>Match Overview</div>", unsafe_allow_html=True)
 
-            def color_win(val):
-                if 45 <= val <= 55:   return "color:#57f287; font-weight:600"
-                elif 35 <= val <= 65: return "color:#fee75c"
-                else:                 return "color:#ed4245"
+            oc1, oc2, oc3 = st.columns(3)
+            with oc1:
+                st.markdown("**Balance Scores by Match**")
+                st.caption("How close each match is to a 50/50 outcome.")
+                st.pyplot(chart_balance_overview(match_df), use_container_width=True)
+            with oc2:
+                st.markdown("**ETS vs Raw Average**")
+                st.caption("Points below the diagonal line have been penalised for uneven skill spread.")
+                st.pyplot(chart_ets_vs_avg(match_df), use_container_width=True)
+            with oc3:
+                st.markdown("**Skill Spread (Std Dev) per Team**")
+                st.caption("Lower std = more uniform team. The dashed line is a low-variance target.")
+                st.pyplot(chart_std_comparison(match_df), use_container_width=True)
 
-            def color_std(val):
-                if val <= 1.0:   return "color:#57f287"
-                elif val <= 2.0: return "color:#fee75c"
-                else:            return "color:#ed4245"
+            # ── Summary table ───────────────────────────────────────────────
+            st.markdown(f"<div style='color:{CREAM};font-size:1rem;font-weight:700;margin:1rem 0 0.3rem'>Match Summary Table</div>", unsafe_allow_html=True)
+            st.caption("ETS = Effective Team Skill. Lower std → ETS closer to raw avg. Higher std → ETS is discounted.")
+
+            def _cb(v):
+                if v >= 95:   return f"background-color:#1a3a1a;color:#6aab6a"
+                elif v >= 80: return f"background-color:#1e2e1e;color:#9ab59a"
+                elif v >= 60: return f"background-color:#2e2410;color:{GOLD}"
+                else:         return f"background-color:{WINE_DARK};color:{WINE_GLOW}"
+
+            def _cw(v):
+                if 45 <= v <= 55:   return f"color:{CREAM};font-weight:700"
+                elif 35 <= v <= 65: return f"color:{GOLD}"
+                else:               return f"color:{WINE_GLOW}"
+
+            def _cs(v):
+                if v <= 1.0:   return f"color:#6aab6a"
+                elif v <= 2.0: return f"color:{GOLD}"
+                else:          return f"color:{WINE_GLOW}"
 
             style = match_df.style
-            if "Balance Score" in match_df.columns:
-                style = style.applymap(color_balance, subset=["Balance Score"])
-            if "Win % (Team A)" in match_df.columns and "Win % (Team B)" in match_df.columns:
-                style = style.applymap(color_win, subset=["Win % (Team A)", "Win % (Team B)"])
-            if "Team A Std" in match_df.columns and "Team B Std" in match_df.columns:
-                style = style.applymap(color_std, subset=["Team A Std", "Team B Std"])
-            styled = style
-            st.dataframe(styled, use_container_width=True, height=min(420, len(matches)*42+60))
+            if "Balance Score"  in match_df.columns: style = style.applymap(_cb, subset=["Balance Score"])
+            if "Win % (A)"      in match_df.columns: style = style.applymap(_cw, subset=["Win % (A)", "Win % (B)"])
+            if "Team A Std"     in match_df.columns: style = style.applymap(_cs, subset=["Team A Std", "Team B Std"])
+            st.dataframe(style, use_container_width=True, height=min(420, len(matches)*42+60))
 
-            # ── Team rosters ──
-            st.markdown("#### Team Rosters")
-            for match in matches:
-                mn  = match["Match #"]
-                bs  = match["Balance Score"]
-                wca = match["Win % (Team A)"]
-                ets_a_val = match["ETS A"]
-                ets_b_val = match["ETS B"]
-                avg_a_val = match["Team A Avg"]
-                avg_b_val = match["Team B Avg"]
-                std_a_val = match["Team A Std"]
-                std_b_val = match["Team B Std"]
+            # ── Per-match rosters ────────────────────────────────────────────
+            st.markdown(f"<div style='color:{CREAM};font-size:1rem;font-weight:700;margin:1rem 0 0.3rem'>Team Rosters</div>", unsafe_allow_html=True)
+
+            for m_row in matches:
+                mn    = m_row["Match"]
+                bs    = m_row["Balance Score"]
                 badge = "🟢" if bs >= 95 else "🟡" if bs >= 80 else "🔴"
 
                 with st.expander(
-                    f"{badge}  Match {mn}  |  "
-                    f"ETS  A={ets_a_val:.2f}  B={ets_b_val:.2f}  |  "
-                    f"Win% A={wca:.1f}%  |  Balance={bs:.1f}%"
+                    f"{badge}  Match {mn}  ·  "
+                    f"ETS  A={m_row['ETS A']:.2f}  B={m_row['ETS B']:.2f}  ·  "
+                    f"Win%  A={m_row['Win % (A)']:.1f}%  ·  "
+                    f"Balance {bs:.1f}%"
                 ):
-                    rc1, rc2 = st.columns(2)
-                    ta_rows = roster_df[(roster_df["Match #"] == mn) & (roster_df["Team"] == "A")]
-                    tb_rows = roster_df[(roster_df["Match #"] == mn) & (roster_df["Team"] == "B")]
+                    # team comparison chart
+                    st.pyplot(chart_team_comparison(m_row, roster_df), use_container_width=True)
 
+                    ta_rows = roster_df[(roster_df["Match"] == mn) & (roster_df["Team"] == "A")].sort_values("Skill", ascending=False)
+                    tb_rows = roster_df[(roster_df["Match"] == mn) & (roster_df["Team"] == "B")].sort_values("Skill", ascending=False)
+
+                    rc1, rc2 = st.columns(2)
                     with rc1:
                         st.markdown(
-                            f"**Team A** &nbsp; avg **{avg_a_val:.2f}** &nbsp; "
-                            f"std **{std_a_val:.2f}** &nbsp; "
-                            f'<span class="ets-badge">ETS {ets_a_val:.2f}</span> &nbsp; '
-                            f"Win% **{match['Win % (Team A)']:.1f}%**",
+                            f"<div style='margin-bottom:0.4rem'>"
+                            f"<b style='color:{WINE_GLOW}'>Team A</b>&nbsp;&nbsp;"
+                            f"avg <b>{m_row['Team A Avg']:.2f}</b>&nbsp; "
+                            f"std <b>{m_row['Team A Std']:.2f}</b>&nbsp; "
+                            f'<span class="ets-badge">ETS {m_row["ETS A"]:.2f}</span>'
+                            f"</div>",
                             unsafe_allow_html=True,
                         )
-                        for _, r in ta_rows.sort_values("Skill", ascending=False).iterrows():
-                            bar_w = int(r["Skill"] * 10)
+                        for _, r in ta_rows.iterrows():
+                            w = int(r["Skill"] * 8)
                             st.markdown(
-                                f'<div class="team-a">'
-                                f'<span>{r["Player"]}</span>'
+                                f'<div class="team-row team-row-a">'
+                                f'<span class="pname">{r["Player"]}</span>'
                                 f'<span>'
-                                f'<span class="skill-bar-bg"><span class="skill-bar-fill-a" style="width:{bar_w}px"></span></span>'
-                                f'&nbsp; <b>{int(r["Skill"])}</b>'
+                                f'<span class="skill-track"><span class="skill-fill-a" style="width:{w}px"></span></span>'
+                                f'<span class="pskill">{int(r["Skill"])}</span>'
                                 f'</span></div>',
                                 unsafe_allow_html=True,
                             )
-
                     with rc2:
                         st.markdown(
-                            f"**Team B** &nbsp; avg **{avg_b_val:.2f}** &nbsp; "
-                            f"std **{std_b_val:.2f}** &nbsp; "
-                            f'<span class="ets-badge" style="background:#1f0d2e;border-color:#4a2a6a;color:#bc8cff">ETS {ets_b_val:.2f}</span> &nbsp; '
-                            f"Win% **{match['Win % (Team B)']:.1f}%**",
+                            f"<div style='margin-bottom:0.4rem'>"
+                            f"<b style='color:#5577CC'>Team B</b>&nbsp;&nbsp;"
+                            f"avg <b>{m_row['Team B Avg']:.2f}</b>&nbsp; "
+                            f"std <b>{m_row['Team B Std']:.2f}</b>&nbsp; "
+                            f'<span class="ets-badge ets-badge-b">ETS {m_row["ETS B"]:.2f}</span>'
+                            f"</div>",
                             unsafe_allow_html=True,
                         )
-                        for _, r in tb_rows.sort_values("Skill", ascending=False).iterrows():
-                            bar_w = int(r["Skill"] * 10)
+                        for _, r in tb_rows.iterrows():
+                            w = int(r["Skill"] * 8)
                             st.markdown(
-                                f'<div class="team-b">'
-                                f'<span>{r["Player"]}</span>'
+                                f'<div class="team-row team-row-b">'
+                                f'<span class="pname">{r["Player"]}</span>'
                                 f'<span>'
-                                f'<span class="skill-bar-bg"><span class="skill-bar-fill-b" style="width:{bar_w}px"></span></span>'
-                                f'&nbsp; <b>{int(r["Skill"])}</b>'
+                                f'<span class="skill-track"><span class="skill-fill-b" style="width:{w}px"></span></span>'
+                                f'<span class="pskill">{int(r["Skill"])}</span>'
                                 f'</span></div>',
                                 unsafe_allow_html=True,
                             )
 
-            # ── Charts ──
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                st.markdown("#### Balance Score Distribution")
-                bins = pd.cut(
-                    match_df["Balance Score"],
-                    bins=[0, 60, 80, 95, 100],
-                    labels=["Poor (<60)", "Fair (60-80)", "Good (80-95)", "Perfect (95+)"],
-                )
-                bc = bins.value_counts().reindex(["Perfect (95+)","Good (80-95)","Fair (60-80)","Poor (<60)"]).reset_index()
-                bc.columns = ["Quality", "Count"]
-                st.bar_chart(bc.set_index("Quality"), use_container_width=True)
-            with cc2:
-                st.markdown("#### ETS Difference per Match")
-                st.caption("Lower = more balanced. Incorporates both skill gap and variance penalty.")
-                st.bar_chart(match_df.set_index("Match #")["ETS Diff"], use_container_width=True)
-
             if benched:
-                st.warning(
-                    f"**{len(benched)} player(s) benched** (not enough for a full match): "
-                    f"{', '.join(benched)}"
-                )
+                st.warning(f"**{len(benched)} player(s) benched** (no complete group of 12): {', '.join(benched)}")
 
-            st.divider()
-            st.markdown("#### Export Results")
+            # ── Export ───────────────────────────────────────────────────────
+            st.markdown("<hr>", unsafe_allow_html=True)
             excel_out = results_to_excel(matches, rosters, benched, src_df)
             st.download_button(
-                "Download Full Results (.xlsx)",
+                "⬇ Download Full Results (.xlsx)",
                 data=excel_out,
                 file_name="6v6_match_results.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
-            st.caption(
-                "Export: **Match Summaries** (incl. ETS + std), **Team Rosters**, "
-                "**Skill Frequency**, **Benched** (if any)."
-            )
+            st.caption("Sheets: Match Summaries · Team Rosters · Skill Frequency · Benched (if any)")
 
 else:
-    st.info("Upload a Skill/Frequency Excel file or generate random players to get started.")
+    st.markdown(
+        f'<div class="callout" style="margin-top:1rem;text-align:center;padding:2rem">'
+        f'Upload a Skill/Frequency Excel file or generate random players to get started.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
-st.markdown("---")
-st.caption(
-    "ETS = mean(skills) − 0.35 × std(skills)  |  "
-    "P(A) = 1/(1+10^(−(ETS_A−ETS_B)/12))  |  "
-    "Max win% = 84.9%  |  Team splits: optimal over all C(12,6)=924 combinations"
+st.markdown(
+    f'<div style="color:{TEXT_SEC};font-size:0.75rem;text-align:center;margin-top:2rem;padding-top:1rem;border-top:1px solid {BORDER}">'
+    f'ETS = mean(skills) − 0.35 × std(skills) &nbsp;·&nbsp; '
+    f'P(A) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 12)) &nbsp;·&nbsp; '
+    f'Max win% = 84.9% &nbsp;·&nbsp; Team splits: C(12,6) = 924 combinations evaluated per match'
+    f'</div>',
+    unsafe_allow_html=True,
 )
