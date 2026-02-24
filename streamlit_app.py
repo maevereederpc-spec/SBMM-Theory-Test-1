@@ -47,12 +47,12 @@ TEAM_B_COL = "#2F4472"
 #    A perfectly uniform team (all same skill) has std=0 and loses nothing.
 #
 #  STAGE 2 — Logistic Win Probability
-#    P(A wins) = 1 / (1 + 10 ^ (−(ETS_A − ETS_B) / K))    where K = 12
+#    P(A wins) = 1 / (1 + 10 ^ (−(ETS_A − ETS_B) / K))    where K = 7
 #
 #    This is a sigmoid (S-curve) that maps any ETS difference to a win
 #    probability between 0% and 100%. K controls how steep the curve is:
 #    a larger K flattens it (skill matters less), a smaller K steepens it.
-#    K = 12 was chosen so that the most extreme possible matchup —
+#    K = 7 was chosen so that the most extreme possible matchup —
 #    a full team of skill-10 players vs a full team of skill-1 players —
 #    produces exactly 84.9%, keeping all outputs below the 85% ceiling.
 #
@@ -60,10 +60,10 @@ TEAM_B_COL = "#2F4472"
 #    • Same ETS on both sides → always exactly 50%
 #    • Symmetric: P(A wins) + P(B wins) = 100% always
 #    • Carry penalty: [10,2,2,2,2,2] vs [3,3,4,4,3,3] → even team is favourite
-#    • Hard cap: win% never exceeds 84.9% regardless of input
+#    • Hard cap: win% never exceeds 95.1% regardless of input
 # =============================================================================
 
-K     = 12
+K     = 7
 ALPHA = 0.35
 
 
@@ -275,12 +275,12 @@ def chart_win_curve():
     ax.fill_between(diffs, probs, 0.5, where=probs <  0.5, alpha=0.12, color=TEAM_B_COL)
     ax.plot(diffs, probs * 100, color=WINE_GLOW, linewidth=2.5)
     ax.axhline(50, color=GOLD, linewidth=1, linestyle="--")
-    ax.axhline(85, color=TEXT_SEC, linewidth=0.8, linestyle=":", alpha=0.6)
-    ax.text(8.5, 86, "85% cap", color=TEXT_SEC, fontsize=7, ha="right")
+    ax.axhline(95.1, color=TEXT_SEC, linewidth=0.8, linestyle=":", alpha=0.6)
+    ax.text(8.5, 96.5, "95.1% cap (K=7)", color=TEXT_SEC, fontsize=7, ha="right")
     ax.axvline(0, color=BORDER, linewidth=1)
-    ax.set_xlabel("ETS_A − ETS_B", color=TEXT_SEC, fontsize=9)
+    ax.set_xlabel("ETS_A − ETS_B  (positive = Team A stronger)", color=TEXT_SEC, fontsize=9)
     ax.set_ylabel("Win Probability for Team A (%)", color=TEXT_SEC, fontsize=9)
-    ax.set_ylim(10, 95)
+    ax.set_ylim(4, 100)
     ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
     fig.tight_layout()
     return fig
@@ -475,6 +475,186 @@ def chart_std_comparison(match_df):
     return fig
 
 
+
+def chart_win_heatmap():
+    """10x10 heatmap of win% for every integer ETS matchup."""
+    skills = np.arange(1, 11)
+    grid   = np.zeros((10, 10))
+    for i, a in enumerate(skills):
+        for j, b in enumerate(skills):
+            grid[i, j] = 1 / (1 + 10 ** (-(float(a) - float(b)) / K)) * 100
+
+    fig, ax = plt.subplots(figsize=(5.8, 4.8))
+    fig.patch.set_facecolor(BG_CARD)
+    ax.set_facecolor(BG_CARD)
+
+    # Custom diverging colourmap: blue → dark → wine
+    from matplotlib.colors import LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list(
+        "wine_blue", ["#2F4472", BG_DARK, WINE], N=256
+    )
+    im = ax.imshow(grid, cmap=cmap, vmin=4.9, vmax=95.1, aspect="auto", origin="lower")
+    cb = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+    cb.ax.yaxis.set_tick_params(color=TEXT_SEC, labelsize=8)
+    cb.set_label("Win % (Team A)", color=TEXT_SEC, fontsize=8)
+    for spine in cb.ax.spines.values():
+        spine.set_edgecolor(BORDER)
+
+    ax.set_xticks(range(10))
+    ax.set_yticks(range(10))
+    ax.set_xticklabels(range(1, 11), color=TEXT_SEC, fontsize=8)
+    ax.set_yticklabels(range(1, 11), color=TEXT_SEC, fontsize=8)
+    ax.set_xlabel("Team B Average Skill (ETS)", color=TEXT_SEC, fontsize=9)
+    ax.set_ylabel("Team A Average Skill (ETS)", color=TEXT_SEC, fontsize=9)
+    ax.tick_params(colors=TEXT_SEC)
+    ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
+    ax.spines["top"].set_color(BORDER);    ax.spines["right"].set_color(BORDER)
+
+    # annotate the 50% diagonal
+    for i in range(10):
+        ax.text(i, i, "50%", ha="center", va="center",
+                color=GOLD, fontsize=6.5, fontweight="bold")
+
+    fig.tight_layout(pad=0.8)
+    return fig
+
+
+def chart_carry_penalty_demo():
+    """Bar chart comparing two teams with the same raw mean but different distributions."""
+    scenarios = [
+        ("Carry\n[10,2,2,2,2,2]",  [10, 2, 2, 2, 2, 2]),
+        ("Even\n[3,3,4,4,3,3]",    [3,  3, 4, 4, 3, 3]),
+        ("Balanced\n[5,5,5,5,5,5]",[5,  5, 5, 5, 5, 5]),
+        ("High-end\n[8,6,4,3,3,3]",[8,  6, 4, 3, 3, 3]),
+    ]
+    labels   = [s[0] for s in scenarios]
+    means    = [np.mean(s[1]) for s in scenarios]
+    ets_vals = [effective_team_skill(s[1]) for s in scenarios]
+    penalties= [m - e for m, e in zip(means, ets_vals)]
+    bar_colors = [WINE if "Carry" in l or "High" in l else "#2F4472" if "Even" in l else GOLD
+                  for l in labels]
+
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    fig.patch.set_facecolor(BG_CARD)
+    ax.set_facecolor(BG_CARD)
+
+    x  = np.arange(len(labels))
+    w  = 0.3
+    b1 = ax.bar(x - w/2, means,    width=w, label="Raw Mean",  color=GOLD,    alpha=0.55, edgecolor=BG_DARK, linewidth=0.5)
+    b2 = ax.bar(x + w/2, ets_vals, width=w, label="ETS (after penalty)", color=bar_colors, edgecolor=BG_DARK, linewidth=0.5)
+
+    for bar, p in zip(b2, penalties):
+        if p > 0.02:
+            ax.annotate(f"−{p:.2f}", xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
+                        xytext=(0, 4), textcoords="offset points",
+                        ha="center", color=WINE_GLOW, fontsize=8, fontweight="bold")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, color=TEXT_SEC, fontsize=8.5)
+    ax.set_ylabel("Skill Score", color=TEXT_SEC, fontsize=9)
+    ax.tick_params(colors=TEXT_SEC, labelsize=8)
+    ax.spines["top"].set_visible(False);   ax.spines["right"].set_visible(False)
+    ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
+    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=8)
+    fig.tight_layout(pad=0.8)
+    return fig
+
+
+def chart_ets_penalty_breakdown(match_df):
+    """Stacked bar: ETS + penalty for every team in every match."""
+    n = len(match_df)
+    row_h = 0.55
+    fig_h = max(3.5, n * row_h * 2 + 1.5)
+
+    fig, ax = plt.subplots(figsize=(6, fig_h))
+    fig.patch.set_facecolor(BG_CARD)
+    ax.set_facecolor(BG_CARD)
+
+    y_pos, y_labels = [], []
+    tick_colors = []
+    for i, (_, row) in enumerate(match_df.iterrows()):
+        base = i * 2.2
+        # Team A
+        ax.barh(base + 0.5, row["ETS A"], height=0.4,
+                color=WINE, edgecolor=BG_DARK, linewidth=0.4, label="ETS A" if i == 0 else "")
+        ax.barh(base + 0.5, row["Team A Avg"] - row["ETS A"],
+                left=row["ETS A"], height=0.4,
+                color=WINE_DARK, alpha=0.7, edgecolor=BG_DARK, linewidth=0.4,
+                label="Variance penalty A" if i == 0 else "")
+        # Team B
+        ax.barh(base, row["ETS B"], height=0.4,
+                color="#2F4472", edgecolor=BG_DARK, linewidth=0.4, label="ETS B" if i == 0 else "")
+        ax.barh(base, row["Team B Avg"] - row["ETS B"],
+                left=row["ETS B"], height=0.4,
+                color="#1a2a4a", alpha=0.7, edgecolor=BG_DARK, linewidth=0.4,
+                label="Variance penalty B" if i == 0 else "")
+        y_pos.extend([base, base + 0.5])
+        y_labels.extend([f"M{row['Match']}·B", f"M{row['Match']}·A"])
+        tick_colors.extend(["#5577CC", WINE_GLOW])
+
+    ax.set_yticks(y_pos)
+    lbl_fs = max(6, 8.5 - n * 0.06)
+    ax.set_yticklabels(y_labels, fontsize=lbl_fs)
+    for tick, col in zip(ax.get_yticklabels(), tick_colors):
+        tick.set_color(col)
+
+    ax.set_xlabel("Skill Score", color=TEXT_SEC, fontsize=9)
+    ax.tick_params(colors=TEXT_SEC, labelsize=8)
+    ax.spines["top"].set_visible(False);   ax.spines["right"].set_visible(False)
+    ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
+    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=7.5, loc="lower right")
+    fig.tight_layout(pad=0.8)
+    return fig
+
+
+def chart_win_prob_bars(match_df):
+    """Horizontal diverging bar chart: Team A win% left of centre, Team B right."""
+    n      = len(match_df)
+    row_h  = 0.48
+    fig_h  = max(2.5, n * row_h + 1.0)
+    bar_h  = min(0.38, max(0.18, 0.38 - n * 0.005))
+    lbl_fs = max(6.5, min(8.5, 8.5 - n * 0.05))
+
+    fig, ax = plt.subplots(figsize=(6.5, fig_h))
+    fig.patch.set_facecolor(BG_CARD)
+    ax.set_facecolor(BG_CARD)
+
+    labels = [f"M{r['Match']}" for _, r in match_df.iterrows()]
+    wc_a   = match_df["Win % (A)"].tolist()
+    wc_b   = match_df["Win % (B)"].tolist()
+
+    for i, (la, wa, wb) in enumerate(zip(labels[::-1], wc_a[::-1], wc_b[::-1])):
+        y = i
+        # Team A bar going left from 50
+        ax.barh(y,  -(wa - 50), left=50, height=bar_h,
+                color=WINE, edgecolor=BG_DARK, linewidth=0.3)
+        # Team B bar going right from 50
+        ax.barh(y, wb - 50, left=50, height=bar_h,
+                color="#2F4472", edgecolor=BG_DARK, linewidth=0.3)
+        if n <= 25:
+            ax.text(50 - (wa - 50) - 0.5, y, f"{wa:.0f}%",
+                    va="center", ha="right", color=TEXT_PRI, fontsize=lbl_fs)
+            ax.text(50 + (wb - 50) + 0.5, y, f"{wb:.0f}%",
+                    va="center", ha="left", color=TEXT_PRI, fontsize=lbl_fs)
+
+    ax.axvline(50, color=GOLD, linewidth=1.2, linestyle="--")
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(labels[::-1], color=TEXT_SEC, fontsize=lbl_fs)
+    ax.set_xlabel("Win Probability (%)", color=TEXT_SEC, fontsize=9)
+    ax.tick_params(colors=TEXT_SEC)
+    ax.spines["top"].set_visible(False);   ax.spines["right"].set_visible(False)
+    ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
+    ax.set_xlim(max(0, min(wc_a) - 8), min(100, max(wc_b) + 8))
+
+    ax.legend(
+        handles=[mpatches.Patch(color=WINE, label="Team A"),
+                 mpatches.Patch(color="#2F4472", label="Team B")],
+        frameon=False, labelcolor=TEXT_SEC, fontsize=8, loc="lower right"
+    )
+    fig.tight_layout(pad=0.8)
+    return fig
+
+
 # =============================================================================
 #  PAGE CONFIG & GLOBAL CSS
 # =============================================================================
@@ -631,13 +811,14 @@ with st.sidebar:
 
 <div class="formula-box">
   <div class="label">Stage 2 — Win Probability</div>
-  <span class="eq">P(A) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 12))</span>
+  <span class="eq">P(A) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 7))</span>
   <p>
     Maps the ETS gap between teams onto a probability between 0% and 100%
     using an S-shaped curve. When ETS_A = ETS_B, the result is exactly 50%.<br><br>
-    The divisor <b>12</b> controls the curve's steepness and was chosen so that
-    the absolute worst-case matchup — a team of all-10s vs a team of all-1s — 
-    produces 84.9%, keeping every outcome below the 85% ceiling.
+    The divisor <b>7</b> controls the curve's steepness. A smaller value produces
+    a steeper curve where even a 1-point ETS gap yields a 58% win probability,
+    making skill differences feel meaningful. The absolute worst-case matchup —
+    a team of all-10s vs a team of all-1s — produces 95.1%.
   </p>
 </div>
 
@@ -655,7 +836,7 @@ with st.sidebar:
         ("50% when ETS_A = ETS_B", True),
         ("Symmetric: P(A)+P(B) = 100%", True),
         ("Carry teams penalised fairly", True),
-        ("Hard cap: max 84.9%", True),
+        ("Hard cap: max 95.1%", True),
         ("Uniform teams: zero penalty", True),
     ]
     tags = "".join(
@@ -744,20 +925,74 @@ with tab_generate:
 
 # ── Formula Explorer ─────────────────────────────────────────────────────────
 with tab_formula:
-    st.markdown(f"<div style='color:{TEXT_SEC};font-size:0.88rem;margin-bottom:1rem'>Visualisations of how the two formula stages behave. Adjust teams manually to see the carry penalty in action.</div>", unsafe_allow_html=True)
+    # ── Section 1: Stage 1 — ETS ────────────────────────────────────────────
+    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.75rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.6rem'>Stage 1 — Effective Team Skill (ETS)</div>", unsafe_allow_html=True)
+    st.markdown(f"""<div class="callout">
+<b>ETS = mean(skills) − 0.35 × std(skills)</b><br><br>
+Every team receives a score that reflects both <i>how skilled</i> it is on average and <i>how evenly that skill is distributed</i>.
+The standard deviation (std) measures internal spread — a perfectly uniform team has std = 0 and suffers no penalty.
+A team with one standout player surrounded by weak ones carries a high std, so its ETS is discounted below its raw mean.
+This reflects the gameplay reality that all six players compete simultaneously: the star cannot be everywhere at once.
+</div>""", unsafe_allow_html=True)
 
     fe1, fe2 = st.columns(2)
     with fe1:
-        st.markdown("**Stage 1 — Variance penalty curve**")
-        st.caption("Shows how ETS drops below raw mean as a team's skill spread increases.")
+        st.markdown("**Variance Penalty Curve**")
         st.pyplot(chart_ets_curve(), use_container_width=True)
+        st.markdown(f"""<div class="callout" style="font-size:0.82rem">
+The red line shows ETS falling below the raw mean (gold dashed) as a team's internal skill spread grows.
+A homogeneous team (std = 0, left edge) loses nothing. The carry team example [10,2,2,2,2,2] has std ≈ 3.0,
+causing an ETS deduction of 0.35 × 3.0 = 1.04 points — equivalent to dropping a full skill tier.
+</div>""", unsafe_allow_html=True)
     with fe2:
-        st.markdown("**Stage 2 — Win probability S-curve**")
-        st.caption("Maps any ETS difference to a win probability. Always 50% when gap is zero.")
-        st.pyplot(chart_win_curve(), use_container_width=True)
+        st.markdown("**Carry Penalty in Practice**")
+        st.pyplot(chart_carry_penalty_demo(), use_container_width=True)
+        st.markdown(f"""<div class="callout" style="font-size:0.82rem">
+Gold bars show raw team means; coloured bars show ETS after the variance deduction.
+The annotations mark the size of each penalty. The <b style="color:{WINE_GLOW}">Carry team</b> and <b style="color:{WINE_GLOW}">High-end team</b>
+both lose meaningful ground despite their raw average looking competitive.
+The <b style="color:#5577CC">Even team</b>'s low spread earns it a near-zero penalty.
+</div>""", unsafe_allow_html=True)
 
     st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("**Interactive Team Builder — see the carry penalty live**")
+
+    # ── Section 2: Stage 2 — Win probability ───────────────────────────────
+    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.75rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.6rem'>Stage 2 — Logistic Win Probability (K = 7)</div>", unsafe_allow_html=True)
+    st.markdown(f"""<div class="callout">
+<b>P(A wins) = 1 / (1 + 10^(−(ETS_A − ETS_B) / 7))</b><br><br>
+The ETS difference is passed through a logistic (S-shaped) function that maps any value to a probability between 0% and 100%.
+When both teams have equal ETS the result is always exactly 50%. The divisor K = 7 sets the steepness:
+at this value a 1-point ETS gap already yields a 58% win probability, so individual skill differences feel meaningful.
+The function is symmetric — Team A's probability plus Team B's always equals 100%.
+</div>""", unsafe_allow_html=True)
+
+    fs1, fs2 = st.columns(2)
+    with fs1:
+        st.markdown("**Win Probability S-Curve**")
+        st.pyplot(chart_win_curve(), use_container_width=True)
+        st.markdown(f"""<div class="callout" style="font-size:0.82rem">
+The curve maps any ETS difference (x-axis) to Team A's win probability (y-axis).
+The vertical gold line marks the 50% point (equal ETS). The dotted line shows the 95.1% cap — the absolute
+maximum produced when a full all-10 team faces a full all-1 team with K = 7.
+Note how the curve steepens in the middle and flattens at extremes: a 1-point gap near 50% matters more than
+a 1-point gap near 90%.
+</div>""", unsafe_allow_html=True)
+    with fs2:
+        st.markdown("**Win % Heatmap — All Skill Matchups**")
+        st.pyplot(chart_win_heatmap(), use_container_width=True)
+        st.markdown(f"""<div class="callout" style="font-size:0.82rem">
+Each cell shows Team A's win probability when Team A has the row's average ETS and Team B has the column's.
+The 50% diagonal (gold labels) runs top-left to bottom-right. Deep wine = Team A dominant;
+deep blue = Team B dominant. This table assumes homogeneous teams (std = 0), so it shows the pure
+logistic effect without any variance penalty applied.
+</div>""", unsafe_allow_html=True)
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # ── Section 3: Interactive team builder ───────────────────────────────
+    st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.75rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.6rem'>Interactive Team Builder</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:{TEXT_SEC};font-size:0.85rem;margin-bottom:0.8rem'>Build two teams with the sliders below and watch the formula compute live. The default example shows a carry team (A) against an even team (B) with the same raw average.</div>", unsafe_allow_html=True)
+
     fi1, fi2 = st.columns(2)
     with fi1:
         st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.8rem;font-weight:700;margin-bottom:0.4rem'>TEAM A</div>", unsafe_allow_html=True)
@@ -782,9 +1017,12 @@ with tab_formula:
         col.markdown(f'<div class="metric-card"><div class="val">{val}</div><div class="lbl">{lbl}</div></div>', unsafe_allow_html=True)
 
     st.markdown("")
+    penalty_a = ALPHA * np.std(ta_vals)
+    penalty_b = ALPHA * np.std(tb_vals)
     st.markdown(f"""<div class="callout">
-<b>Team A</b>: mean = {np.mean(ta_vals):.2f}, std = {np.std(ta_vals):.2f} → penalty = {ALPHA * np.std(ta_vals):.2f} → ETS = <b>{ets_a_live:.2f}</b><br>
-<b>Team B</b>: mean = {np.mean(tb_vals):.2f}, std = {np.std(tb_vals):.2f} → penalty = {ALPHA * np.std(tb_vals):.2f} → ETS = <b>{ets_b_live:.2f}</b>
+<b>Team A</b>: mean = {np.mean(ta_vals):.2f}, std = {np.std(ta_vals):.2f} → variance penalty = {penalty_a:.2f} → ETS = <b>{ets_a_live:.2f}</b><br>
+<b>Team B</b>: mean = {np.mean(tb_vals):.2f}, std = {np.std(tb_vals):.2f} → variance penalty = {penalty_b:.2f} → ETS = <b>{ets_b_live:.2f}</b><br>
+ETS gap = {abs(ets_a_live - ets_b_live):.2f} → win probability = 1 / (1 + 10^(−{abs(ets_a_live - ets_b_live):.2f} / 7)) = <b>{wc_live*100:.1f}%</b>
 </div>""", unsafe_allow_html=True)
 
 
@@ -882,19 +1120,29 @@ if players_df is not None:
             # ── Overview charts ─────────────────────────────────────────────
             st.markdown(f"<div style='color:{CREAM};font-size:1rem;font-weight:700;margin:0.8rem 0 0.4rem'>Match Overview</div>", unsafe_allow_html=True)
 
-            oc1, oc2, oc3 = st.columns(3)
+            oc1, oc2 = st.columns(2)
             with oc1:
                 st.markdown("**Balance Scores by Match**")
-                st.caption("How close each match is to a 50/50 outcome.")
+                st.caption("How close each match is to a 50/50 outcome. Green = near-perfect, red = imbalanced.")
                 st.pyplot(chart_balance_overview(match_df), use_container_width=True)
             with oc2:
-                st.markdown("**ETS vs Raw Average**")
-                st.caption("Points below the diagonal line have been penalised for uneven skill spread.")
-                st.pyplot(chart_ets_vs_avg(match_df), use_container_width=True)
+                st.markdown("**Win Probability Split per Match**")
+                st.caption("Each bar shows the win% each team holds. Gold line = perfect 50/50. Wider bars = less balanced match.")
+                st.pyplot(chart_win_prob_bars(match_df), use_container_width=True)
+
+            oc3, oc4 = st.columns(2)
             with oc3:
+                st.markdown("**ETS vs Raw Average**")
+                st.caption("Points below the diagonal were penalised for uneven skill spread. The further below, the larger the variance deduction.")
+                st.pyplot(chart_ets_vs_avg(match_df), use_container_width=True)
+            with oc4:
                 st.markdown("**Skill Spread (Std Dev) per Team**")
-                st.caption("Lower std = more uniform team. The dashed line is a low-variance target.")
+                st.caption("Lower std = more uniform team. High-std teams pay a larger ETS penalty. Dashed line = low-variance target.")
                 st.pyplot(chart_std_comparison(match_df), use_container_width=True)
+
+            st.markdown("**ETS & Variance Penalty Breakdown per Team**")
+            st.caption("Each row shows a team's ETS (solid) plus how much was deducted as a variance penalty (faded). Longer penalty section = more imbalanced team composition.")
+            st.pyplot(chart_ets_penalty_breakdown(match_df), use_container_width=True)
 
             # ── Summary table ───────────────────────────────────────────────
             st.markdown(f"<div style='color:{CREAM};font-size:1rem;font-weight:700;margin:1rem 0 0.3rem'>Match Summary Table</div>", unsafe_allow_html=True)
