@@ -3,73 +3,45 @@ import pandas as pd
 import numpy as np
 import random
 import io
-from itertools import combinations
 
-# ─────────────────────────────────────────────
+# =============================================================================
 #  CORE LOGIC
-# ─────────────────────────────────────────────
+# =============================================================================
 
 def win_chance(skill_a: int, skill_b: int) -> float:
     """
-    Returns the win probability for Player A vs Player B.
+    Win probability for Player A vs Player B.
     Base = 50%.  Each bracket A is above B multiplies by 1.1;
     each bracket A is below B multiplies by 0.9.
-    e.g. skill 5 vs 3 → 0.5 * 1.1^2 = 0.605  ✓
-         skill 5 vs 10 → 0.5 * 0.9^5 = 0.2952 ✓
+      Skill 5 vs 3  -> 0.5 * 1.1^2  = 0.6050
+      Skill 5 vs 10 -> 0.5 * 0.9^5  = 0.2952
     """
-    diff = skill_a - skill_b
-    return 0.5 * (1.1 ** diff)
+    return 0.5 * (1.1 ** (skill_a - skill_b))
 
 
 def balance_score(skill_a: int, skill_b: int) -> float:
-    """
-    How close to a 50/50 match this pairing is.
-    Score = 1 − |win_chance − 0.5|  (1.0 = perfect balance)
-    """
-    wc = win_chance(skill_a, skill_b)
-    return 1.0 - abs(wc - 0.5)
+    """1 = perfect 50/50, 0 = completely one-sided."""
+    return 1.0 - abs(win_chance(skill_a, skill_b) - 0.5)
 
 
 def generate_skill_level() -> int:
+    """Normal distribution centred on 5, clipped to [1, 10]."""
+    return max(1, min(10, int(round(random.gauss(5, 1.8)))))
+
+
+def greedy_matchmake(players_df: pd.DataFrame):
     """
-    Normal distribution centred on 5, clipped to [1, 10].
-    """
-    val = int(round(random.gauss(5, 1.8)))
-    return max(1, min(10, val))
-
-
-def generate_players(n: int) -> pd.DataFrame:
-    random.seed(42)
-    players = []
-    for i in range(1, n + 1):
-        players.append({"Player": f"Player_{i:03d}", "Skill": generate_skill_level()})
-    return pd.DataFrame(players)
-
-
-def greedy_matchmake(players_df: pd.DataFrame) -> tuple[list[dict], list[str]]:
-    """
-    Optimal-ish matchmaking using a greedy approach on a sorted list.
-
-    1. Sort players by skill.
-    2. Use a round-robin min-cost pairing on the sorted array:
-       try every consecutive pair in a sliding window and always
-       pick the best remaining unmatched pair.
-
-    Returns: (matches, unmatched_players)
+    Greedily pair players by best balance score (closest to 50/50).
+    Returns (list[dict], list[str]) -> matches, unmatched player names.
     """
     df = players_df.copy().reset_index(drop=True)
     n = len(df)
 
-    # Build all possible pairs with their balance score
     pair_scores = []
     for i in range(n):
         for j in range(i + 1, n):
-            a = df.iloc[i]
-            b = df.iloc[j]
-            score = balance_score(int(a["Skill"]), int(b["Skill"]))
-            pair_scores.append((score, i, j))
-
-    # Sort by best balance score descending
+            s = balance_score(int(df.at[i, "Skill"]), int(df.at[j, "Skill"]))
+            pair_scores.append((s, i, j))
     pair_scores.sort(key=lambda x: -x[0])
 
     matched = set()
@@ -77,17 +49,16 @@ def greedy_matchmake(players_df: pd.DataFrame) -> tuple[list[dict], list[str]]:
     for score, i, j in pair_scores:
         if i in matched or j in matched:
             continue
-        a = df.iloc[i]
-        b = df.iloc[j]
+        a, b = df.iloc[i], df.iloc[j]
         wc = win_chance(int(a["Skill"]), int(b["Skill"]))
         matches.append({
-            "Match #": len(matches) + 1,
-            "Player A": a["Player"],
-            "Skill A": int(a["Skill"]),
-            "Player B": b["Player"],
-            "Skill B": int(b["Skill"]),
-            "Win % (A)": round(wc * 100, 2),
-            "Win % (B)": round((1 - wc) * 100, 2),
+            "Match #":       len(matches) + 1,
+            "Player A":      a["Player"],
+            "Skill A":       int(a["Skill"]),
+            "Player B":      b["Player"],
+            "Skill B":       int(b["Skill"]),
+            "Win % (A)":     round(wc * 100, 2),
+            "Win % (B)":     round((1 - wc) * 100, 2),
             "Balance Score": round(score * 100, 2),
         })
         matched.add(i)
@@ -97,39 +68,63 @@ def greedy_matchmake(players_df: pd.DataFrame) -> tuple[list[dict], list[str]]:
     return matches, unmatched
 
 
-def skill_distribution_chart(df: pd.DataFrame):
-    counts = df["Skill"].value_counts().sort_index().reset_index()
-    counts.columns = ["Skill Level", "Player Count"]
-    return counts
-
-
-# ─────────────────────────────────────────────
+# =============================================================================
 #  EXCEL HELPERS
-# ─────────────────────────────────────────────
+# =============================================================================
 
-def read_excel_players(file) -> pd.DataFrame:
+def read_excel_frequency(file) -> pd.DataFrame:
+    """
+    Read a Skill / Frequency Excel sheet and expand into one row per player.
+    Auto-names players Player_001, Player_002, ...
+    """
     df = pd.read_excel(file)
-    # Normalise column names
     df.columns = [c.strip().title() for c in df.columns]
-    if "Player" not in df.columns or "Skill" not in df.columns:
-        raise ValueError("Excel file must have 'Player' and 'Skill' columns.")
-    df["Skill"] = pd.to_numeric(df["Skill"], errors="coerce").clip(1, 10).fillna(5).astype(int)
-    df = df[["Player", "Skill"]].dropna()
-    return df
+    if "Skill" not in df.columns or "Frequency" not in df.columns:
+        raise ValueError("Excel file must have 'Skill' and 'Frequency' columns.")
+
+    df["Skill"]     = pd.to_numeric(df["Skill"],     errors="coerce").clip(1, 10).fillna(5).astype(int)
+    df["Frequency"] = pd.to_numeric(df["Frequency"], errors="coerce").fillna(0).astype(int)
+    df = df[df["Frequency"] > 0]
+
+    if df.empty:
+        raise ValueError("No valid rows found. Check that Frequency values are positive integers.")
+
+    rows = []
+    for _, row in df.iterrows():
+        for _ in range(int(row["Frequency"])):
+            rows.append(int(row["Skill"]))
+
+    players_df = pd.DataFrame({"Skill": rows})
+    players_df["Player"] = [f"Player_{i+1:03d}" for i in range(len(players_df))]
+    return players_df[["Player", "Skill"]]
+
+
+def frequency_table_from_players(players_df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse a player list back into Skill / Frequency."""
+    freq = players_df["Skill"].value_counts().sort_index().reset_index()
+    freq.columns = ["Skill", "Frequency"]
+    return freq
 
 
 def create_sample_excel() -> bytes:
-    df = generate_players(20)
+    """Sample Excel in Skill / Frequency format (bell curve around 5)."""
+    data = {
+        "Skill":     [1,  2,  3,  4,  5,  6,  7,  8,  9, 10],
+        "Frequency": [1,  2,  4,  7, 10,  8,  5,  3,  2,  1],
+    }
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Players")
+        pd.DataFrame(data).to_excel(writer, index=False, sheet_name="Players")
     return buf.getvalue()
 
 
-def matches_to_excel(matches: list[dict], unmatched: list[str]) -> bytes:
+def matches_to_excel(matches, unmatched, players_df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         pd.DataFrame(matches).to_excel(writer, index=False, sheet_name="Matches")
+        frequency_table_from_players(players_df).to_excel(
+            writer, index=False, sheet_name="Skill Frequency"
+        )
         if unmatched:
             pd.DataFrame({"Unmatched Players": unmatched}).to_excel(
                 writer, index=False, sheet_name="Unmatched"
@@ -137,194 +132,209 @@ def matches_to_excel(matches: list[dict], unmatched: list[str]) -> bytes:
     return buf.getvalue()
 
 
-# ─────────────────────────────────────────────
+def skill_distribution_chart(df: pd.DataFrame) -> pd.DataFrame:
+    counts = df["Skill"].value_counts().sort_index().reset_index()
+    counts.columns = ["Skill Level", "Player Count"]
+    return counts
+
+
+# =============================================================================
 #  STREAMLIT UI
-# ─────────────────────────────────────────────
+# =============================================================================
 
-st.set_page_config(
-    page_title="Skill-Based Matchmaking",
-    page_icon="⚔️",
-    layout="wide",
-)
+st.set_page_config(page_title="Skill-Based Matchmaking", page_icon="⚔️", layout="wide")
 
-# ── Header ──────────────────────────────────
 st.markdown("""
 <style>
-    .title-block { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-                   padding: 2rem 2.5rem; border-radius: 12px; margin-bottom: 1.5rem; }
+    .title-block {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        padding: 2rem 2.5rem; border-radius: 12px; margin-bottom: 1.5rem;
+    }
     .title-block h1 { color: #e94560; margin: 0; font-size: 2.2rem; }
     .title-block p  { color: #a8b2d8; margin: 0.5rem 0 0; font-size: 1rem; }
-    .metric-card    { background:#1e1e2e; border:1px solid #2d2d44; border-radius:10px;
-                      padding:1rem 1.5rem; text-align:center; }
-    .metric-card h3 { color:#e94560; font-size:2rem; margin:0; }
-    .metric-card p  { color:#a8b2d8; margin:0.25rem 0 0; font-size:0.85rem; }
-    .formula-box    { background:#0d1117; border-left:4px solid #e94560;
-                      border-radius:6px; padding:0.8rem 1.2rem; font-family:monospace;
-                      color:#58a6ff; font-size:0.9rem; margin:0.5rem 0; }
-    .badge-green  { background:#1a472a; color:#57f287; padding:2px 10px;
-                    border-radius:99px; font-size:0.78rem; font-weight:600; }
-    .badge-yellow { background:#4a3728; color:#fee75c; padding:2px 10px;
-                    border-radius:99px; font-size:0.78rem; font-weight:600; }
-    .badge-red    { background:#4a1428; color:#ed4245; padding:2px 10px;
-                    border-radius:99px; font-size:0.78rem; font-weight:600; }
+    .metric-card {
+        background: #1e1e2e; border: 1px solid #2d2d44; border-radius: 10px;
+        padding: 1rem 1.5rem; text-align: center;
+    }
+    .metric-card h3 { color: #e94560; font-size: 2rem; margin: 0; }
+    .metric-card p  { color: #a8b2d8; margin: 0.25rem 0 0; font-size: 0.85rem; }
+    .formula-box {
+        background: #0d1117; border-left: 4px solid #e94560;
+        border-radius: 6px; padding: 0.8rem 1.2rem;
+        font-family: monospace; color: #58a6ff; font-size: 0.9rem; margin: 0.5rem 0;
+    }
 </style>
 <div class="title-block">
-  <h1>⚔️ Skill-Based Matchmaking System</h1>
-  <p>Fair 1v1 pairings · Win probabilities · Optimal balance scoring</p>
+  <h1>Skill-Based Matchmaking System</h1>
+  <p>Fair 1v1 pairings from skill frequency data &nbsp;·&nbsp; Win probabilities &nbsp;·&nbsp; Optimal balance scoring</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Sidebar: How it works ────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 📐 How Win % is Calculated")
-    st.markdown("""
-**Base:** Same skill → **50% win chance**
-
-Each bracket *above* opponent → ×1.1  
-Each bracket *below* opponent → ×0.9
-
-**Formula:**
-""")
-    st.markdown('<div class="formula-box">win% = 0.5 × 1.1^(skillA − skillB)</div>', unsafe_allow_html=True)
-    st.markdown("""
-**Examples:**
-- Skill 5 vs 5 → **50.00%**
-- Skill 5 vs 3 → **60.50%**
-- Skill 5 vs 10 → **29.52%**
-
-**Matchmaking goal:** Pair players so that win percentages are as close to 50% as possible (Balance Score → 100%).
-""")
+    st.markdown("### How Win % is Calculated")
+    st.markdown(
+        "**Base:** Same skill level = **50% win chance**\n\n"
+        "Each bracket *above* opponent multiplies by **x1.1**  \n"
+        "Each bracket *below* opponent multiplies by **x0.9**"
+    )
+    st.markdown(
+        '<div class="formula-box">P(A wins) = 0.5 x 1.1^(skillA - skillB)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "**Examples:**\n"
+        "- Skill 5 vs 5 = **50.00%**\n"
+        "- Skill 5 vs 3 = **60.50%**\n"
+        "- Skill 5 vs 10 = **29.52%**\n\n"
+        "**Matchmaking goal:** Pair players so win % is as close to 50% as possible."
+    )
     st.divider()
-    st.markdown("### 📁 Sample File")
-    sample_bytes = create_sample_excel()
+    st.markdown("### Sample Excel File")
+    st.markdown("Two columns: **Skill** (1-10) and **Frequency** (player count at that level).")
     st.download_button(
-        "⬇️ Download Sample Excel",
-        data=sample_bytes,
-        file_name="sample_players.xlsx",
+        "Download Sample Excel",
+        data=create_sample_excel(),
+        file_name="sample_skill_frequency.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    st.caption("Excel must have **Player** and **Skill** columns. Skill range: 1–10.")
 
-# ── Tabs ────────────────────────────────────
-tab_upload, tab_generate = st.tabs(["📂 Upload Excel", "🎲 Generate Random Players"])
+# ── Input tabs ────────────────────────────────────────────────────────────────
+tab_upload, tab_generate = st.tabs(["Upload Excel", "Generate Random Players"])
 
 players_df = None
 
-# ── Tab 1: Upload ────────────────────────────
 with tab_upload:
-    uploaded = st.file_uploader("Upload your player list (.xlsx)", type=["xlsx", "xls"])
+    st.markdown(
+        "Upload an Excel file with **Skill** and **Frequency** columns. "
+        "Each row defines a skill level and how many players have that skill."
+    )
+    uploaded = st.file_uploader("Choose .xlsx file", type=["xlsx", "xls"])
     if uploaded:
         try:
-            players_df = read_excel_players(uploaded)
-            st.success(f"✅ Loaded **{len(players_df)} players** from file.")
+            players_df = read_excel_frequency(uploaded)
+            freq_preview = frequency_table_from_players(players_df)
+            total = freq_preview["Frequency"].sum()
+            st.success(f"Loaded **{total} players** across **{len(freq_preview)} skill levels**.")
+            st.dataframe(freq_preview, use_container_width=True, hide_index=True)
         except Exception as e:
-            st.error(f"❌ {e}")
+            st.error(f"Error: {e}")
 
-# ── Tab 2: Generate ──────────────────────────
 with tab_generate:
     col_n, col_seed = st.columns([2, 1])
     with col_n:
-        n_players = st.slider("Number of players to generate", 4, 100, 16, step=2)
+        n_players = st.slider("Number of players to generate", 4, 200, 20, step=2)
     with col_seed:
         seed = st.number_input("Random seed", value=42, step=1)
 
-    if st.button("🎲 Generate Players", use_container_width=True):
+    if st.button("Generate Players", use_container_width=True):
         random.seed(int(seed))
-        players_df = pd.DataFrame(
-            [{"Player": f"Player_{i:03d}", "Skill": generate_skill_level()} for i in range(1, n_players + 1)]
+        skills = [generate_skill_level() for _ in range(n_players)]
+        gen_df = pd.DataFrame({
+            "Player": [f"Player_{i+1:03d}" for i in range(n_players)],
+            "Skill":  skills,
+        })
+        st.session_state["generated_df"] = gen_df
+        freq_gen = frequency_table_from_players(gen_df)
+        st.success(f"Generated **{n_players} players** - skill distribution below.")
+        st.dataframe(freq_gen, use_container_width=True, hide_index=True)
+
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            freq_gen.to_excel(writer, index=False, sheet_name="Players")
+        st.download_button(
+            "Download as Skill/Frequency Excel",
+            data=buf.getvalue(),
+            file_name="generated_skill_frequency.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        st.session_state["generated_df"] = players_df
-        st.success(f"✅ Generated **{len(players_df)} players**.")
 
     if "generated_df" in st.session_state and players_df is None:
         players_df = st.session_state["generated_df"]
 
-# ── Main content: show roster + run matchmaking ──
+# ── Main dashboard ────────────────────────────────────────────────────────────
 if players_df is not None:
     st.divider()
 
-    # ── Roster Overview ──
-    col1, col2, col3, col4 = st.columns(4)
     avg_skill = players_df["Skill"].mean()
-    min_skill  = players_df["Skill"].min()
-    max_skill  = players_df["Skill"].max()
-    n_matchable = (len(players_df) // 2) * 2
+    min_skill = int(players_df["Skill"].min())
+    max_skill = int(players_df["Skill"].max())
 
+    c1, c2, c3, c4 = st.columns(4)
     for col, val, label in [
-        (col1, len(players_df), "Total Players"),
-        (col2, f"{avg_skill:.1f}", "Average Skill"),
-        (col3, f"{min_skill} – {max_skill}", "Skill Range"),
-        (col4, len(players_df) % 2, "Will Sit Out"),
+        (c1, len(players_df),                  "Total Players"),
+        (c2, f"{avg_skill:.1f}",               "Average Skill"),
+        (c3, f"{min_skill} to {max_skill}",    "Skill Range"),
+        (c4, len(players_df) % 2,              "Will Sit Out"),
     ]:
-        col.markdown(f"""<div class="metric-card"><h3>{val}</h3><p>{label}</p></div>""",
-                     unsafe_allow_html=True)
+        col.markdown(
+            f'<div class="metric-card"><h3>{val}</h3><p>{label}</p></div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("")
 
-    col_roster, col_dist = st.columns([1, 1])
+    col_freq, col_dist = st.columns([1, 1])
 
-    with col_roster:
-        st.markdown("#### 👥 Player Roster")
-        st.dataframe(
-            players_df.sort_values("Skill", ascending=False).reset_index(drop=True),
-            use_container_width=True,
-            height=320,
+    with col_freq:
+        st.markdown("#### Skill Frequency Breakdown")
+        freq_display = frequency_table_from_players(players_df).copy()
+        freq_display["Win % vs Avg (Skill 5)"] = freq_display["Skill"].apply(
+            lambda s: f"{win_chance(int(s), 5) * 100:.1f}%"
         )
+        st.dataframe(freq_display, use_container_width=True, height=360, hide_index=True)
 
     with col_dist:
-        st.markdown("#### 📊 Skill Distribution")
+        st.markdown("#### Skill Distribution Chart")
         dist = skill_distribution_chart(players_df)
-        st.bar_chart(dist.set_index("Skill Level"), use_container_width=True, height=300)
+        st.bar_chart(dist.set_index("Skill Level"), use_container_width=True, height=340)
 
-    # ── Win Probability Reference Table ──────
-    with st.expander("🔢 Win Probability Reference Table (all skill combos)"):
+    with st.expander("Win Probability Reference Table (all skill combos 1-10)"):
         skills = list(range(1, 11))
-        ref = {}
-        for sa in skills:
-            ref[sa] = {sb: f"{win_chance(sa, sb)*100:.1f}%" for sb in skills}
-        ref_df = pd.DataFrame(ref).T
-        ref_df.index.name = "Skill A ↓ / Skill B →"
+        ref_df = pd.DataFrame(
+            {sa: {sb: f"{win_chance(sa, sb)*100:.1f}%" for sb in skills} for sa in skills}
+        ).T
+        ref_df.index.name = "Skill A / Skill B"
         st.dataframe(ref_df, use_container_width=True)
 
     st.divider()
 
-    # ── Matchmaking ──────────────────────────
-    st.markdown("### ⚔️ Run Matchmaking")
+    # ── Matchmaking ──────────────────────────────────────────────────────────
+    st.markdown("### Run Matchmaking")
 
-    if st.button("🚀 Generate Optimal Matches", use_container_width=True, type="primary"):
-        with st.spinner("Finding optimal pairings…"):
+    if st.button("Generate Optimal Matches", use_container_width=True, type="primary"):
+        with st.spinner("Finding optimal pairings..."):
             matches, unmatched = greedy_matchmake(players_df)
-
-        st.session_state["matches"] = matches
+        st.session_state["matches"]   = matches
         st.session_state["unmatched"] = unmatched
+        st.session_state["match_src"] = players_df.copy()
 
     if "matches" in st.session_state:
-        matches  = st.session_state["matches"]
+        matches   = st.session_state["matches"]
         unmatched = st.session_state["unmatched"]
+        src_df    = st.session_state.get("match_src", players_df)
 
         if not matches:
             st.warning("Not enough players to form a match.")
         else:
-            match_df = pd.DataFrame(matches)
-
+            match_df    = pd.DataFrame(matches)
             avg_balance = match_df["Balance Score"].mean()
-            perfect = (match_df["Balance Score"] == 100).sum()
-            near_50 = match_df[(match_df["Win % (A)"] >= 45) & (match_df["Win % (A)"] <= 55)].shape[0]
+            perfect     = int((match_df["Balance Score"] >= 99.99).sum())
 
-            mc1, mc2, mc3, mc4 = st.columns(4)
+            m1, m2, m3, m4 = st.columns(4)
             for col, val, label in [
-                (mc1, len(matches), "Matches Created"),
-                (mc2, f"{avg_balance:.1f}%", "Avg Balance Score"),
-                (mc3, perfect, "Perfect 50/50 Matches"),
-                (mc4, len(unmatched), "Unmatched Players"),
+                (m1, len(matches),          "Matches Created"),
+                (m2, f"{avg_balance:.1f}%", "Avg Balance Score"),
+                (m3, perfect,               "Perfect 50/50 Matches"),
+                (m4, len(unmatched),        "Unmatched Players"),
             ]:
-                col.markdown(f"""<div class="metric-card"><h3>{val}</h3><p>{label}</p></div>""",
-                             unsafe_allow_html=True)
+                col.markdown(
+                    f'<div class="metric-card"><h3>{val}</h3><p>{label}</p></div>',
+                    unsafe_allow_html=True,
+                )
 
             st.markdown("")
-
-            # ── Colour-coded match table ──
-            st.markdown("#### 🏆 Match Results")
+            st.markdown("#### Match Results")
 
             def color_balance(val):
                 if val >= 95:
@@ -349,44 +359,59 @@ if players_df is not None:
                 .applymap(color_balance, subset=["Balance Score"])
                 .applymap(color_win,     subset=["Win % (A)", "Win % (B)"])
             )
-
             st.dataframe(styled, use_container_width=True, height=420)
 
-            # ── Balance distribution chart ──
-            col_chart1, col_chart2 = st.columns(2)
-
-            with col_chart1:
-                st.markdown("#### 📈 Balance Score Distribution")
-                bins = pd.cut(match_df["Balance Score"], bins=[0,60,80,95,100], labels=["Poor","Fair","Good","Perfect"])
-                bin_counts = bins.value_counts().reindex(["Perfect","Good","Fair","Poor"]).reset_index()
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                st.markdown("#### Balance Score Distribution")
+                bins = pd.cut(
+                    match_df["Balance Score"],
+                    bins=[0, 60, 80, 95, 100],
+                    labels=["Poor", "Fair", "Good", "Perfect"],
+                )
+                bin_counts = (
+                    bins.value_counts()
+                    .reindex(["Perfect", "Good", "Fair", "Poor"])
+                    .reset_index()
+                )
                 bin_counts.columns = ["Quality", "Count"]
                 st.bar_chart(bin_counts.set_index("Quality"), use_container_width=True)
 
-            with col_chart2:
-                st.markdown("#### 📉 Win % Distribution (Player A)")
-                win_hist = match_df["Win % (A)"].round(0).value_counts().sort_index().reset_index()
+            with col_c2:
+                st.markdown("#### Win % Distribution (Player A)")
+                win_hist = (
+                    match_df["Win % (A)"].round(0)
+                    .value_counts().sort_index().reset_index()
+                )
                 win_hist.columns = ["Win %", "Matches"]
                 st.bar_chart(win_hist.set_index("Win %"), use_container_width=True)
 
-            # ── Unmatched players ──
             if unmatched:
-                st.warning(f"⚠️ **{len(unmatched)} player(s) could not be matched** (odd number of players): {', '.join(unmatched)}")
+                st.warning(
+                    f"**{len(unmatched)} player(s) could not be matched** "
+                    f"(odd total): {', '.join(unmatched)}"
+                )
 
-            # ── Download results ──
             st.divider()
-            st.markdown("#### 💾 Export Results")
-            excel_out = matches_to_excel(matches, unmatched)
+            st.markdown("#### Export Results")
+            excel_out = matches_to_excel(matches, unmatched, src_df)
             st.download_button(
-                "⬇️ Download Match Results (.xlsx)",
+                "Download Match Results (.xlsx)",
                 data=excel_out,
                 file_name="match_results.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
+            st.caption(
+                "Export includes three sheets: **Matches**, **Skill Frequency** summary, "
+                "and **Unmatched** players (if any)."
+            )
 
 else:
-    st.info("👆 Upload an Excel file or generate random players to get started.")
+    st.info("Upload a Skill/Frequency Excel file or generate random players to get started.")
 
-# ── Footer ────────────────────────────────────
 st.markdown("---")
-st.caption("Win probability formula: `P(A wins) = 0.5 × 1.1^(skillA − skillB)` · Balance Score = `100 × (1 − |P − 0.5|)`")
+st.caption(
+    "Win probability: P(A) = 0.5 x 1.1^(skillA - skillB)  "
+    "| Balance Score: 100 x (1 - |P(A) - 0.5|)"
+)
