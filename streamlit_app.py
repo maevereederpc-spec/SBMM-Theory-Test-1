@@ -506,6 +506,9 @@ if players_df is not None:
         st.warning("Need at least 12 players to form one 6v6 match.")
     else:
         if st.button("Generate Optimal 6v6 Matches", use_container_width=True, type="primary"):
+            # Clear any stale results from previous app versions before storing new ones
+            for _k in ["matches", "rosters", "benched", "match_src"]:
+                st.session_state.pop(_k, None)
             with st.spinner("Evaluating all possible team splits (924 per match)..."):
                 matches, rosters, benched = matchmake_6v6(players_df, alpha=alpha_mm)
             st.session_state["matches"]   = matches
@@ -562,12 +565,14 @@ if players_df is not None:
                 elif val <= 2.0: return "color:#fee75c"
                 else:            return "color:#ed4245"
 
-            styled = (
-                match_df.style
-                .applymap(color_balance, subset=["Balance Score"])
-                .applymap(color_win,     subset=["Win % (Team A)", "Win % (Team B)"])
-                .applymap(color_std,     subset=["Team A Std", "Team B Std"])
-            )
+            style = match_df.style
+            if "Balance Score" in match_df.columns:
+                style = style.applymap(color_balance, subset=["Balance Score"])
+            if "Win % (Team A)" in match_df.columns and "Win % (Team B)" in match_df.columns:
+                style = style.applymap(color_win, subset=["Win % (Team A)", "Win % (Team B)"])
+            if "Team A Std" in match_df.columns and "Team B Std" in match_df.columns:
+                style = style.applymap(color_std, subset=["Team A Std", "Team B Std"])
+            styled = style
             st.dataframe(styled, use_container_width=True, height=min(420, len(matches)*42+60))
 
             # ── Team rosters ──
