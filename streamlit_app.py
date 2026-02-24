@@ -287,12 +287,20 @@ def chart_win_curve():
 
 
 def chart_team_comparison(match_row, roster_df):
-    """Horizontal bar comparison of both teams' player skills."""
+    """
+    Horizontal bar comparison of both teams' player skills.
+    Height scales with the number of players per team (always 6, but future-proof).
+    """
     mn      = match_row["Match"]
     ta_rows = roster_df[(roster_df["Match"] == mn) & (roster_df["Team"] == "A")].sort_values("Skill", ascending=False)
     tb_rows = roster_df[(roster_df["Match"] == mn) & (roster_df["Team"] == "B")].sort_values("Skill", ascending=False)
 
-    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(7, 2.8), sharey=False)
+    n_players = max(len(ta_rows), len(tb_rows))
+    fig_h     = max(2.2, n_players * 0.42 + 0.8)
+    bar_h     = min(0.55, max(0.25, 0.55 - max(0, n_players - 6) * 0.05))
+    lbl_fs    = max(7, 8.5 - max(0, n_players - 6) * 0.2)
+
+    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(7, fig_h), sharey=False)
     fig.patch.set_facecolor(BG_PANEL)
 
     for ax, rows, color, label, ets_val, win_val in [
@@ -300,36 +308,40 @@ def chart_team_comparison(match_row, roster_df):
         (ax_b, tb_rows, TEAM_B_COL, "Team B", match_row["ETS B"], match_row["Win % (B)"]),
     ]:
         ax.set_facecolor(BG_PANEL)
+        # Shorten player names to avoid overflow
         names  = [r["Player"].replace("Player_", "P") for _, r in rows.iterrows()]
         skills = [r["Skill"] for _, r in rows.iterrows()]
 
-        bars = ax.barh(names, skills, color=color, height=0.55, edgecolor=BG_DARK, linewidth=0.5)
-        ax.set_xlim(0, 11)
-        ax.set_xlabel("Skill", color=TEXT_SEC, fontsize=8)
+        bars = ax.barh(names, skills, color=color, height=bar_h, edgecolor=BG_DARK, linewidth=0.4)
+        ax.set_xlim(0, 12.5)
+        ax.set_xlabel("Skill", color=TEXT_SEC, fontsize=7.5)
         ax.set_title(f"{label}  |  ETS {ets_val:.2f}  |  Win% {win_val:.1f}%",
-                     color=TEXT_PRI, fontsize=8.5, pad=6)
-        ax.tick_params(colors=TEXT_SEC, labelsize=7.5)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["bottom"].set_color(BORDER)
-        ax.spines["left"].set_color(BORDER)
+                     color=TEXT_PRI, fontsize=8, pad=5)
+        ax.tick_params(colors=TEXT_SEC, labelsize=lbl_fs)
+        ax.spines["top"].set_visible(False);  ax.spines["right"].set_visible(False)
+        ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
 
         for bar, skill in zip(bars, skills):
-            ax.text(skill + 0.15, bar.get_y() + bar.get_height()/2,
-                    str(skill), va="center", color=TEXT_PRI, fontsize=8, fontweight="bold")
+            ax.text(skill + 0.2, bar.get_y() + bar.get_height()/2,
+                    str(skill), va="center", color=TEXT_PRI, fontsize=lbl_fs, fontweight="bold")
 
-    fig.tight_layout(pad=1.2)
+    fig.tight_layout(pad=0.9)
     return fig
 
 
 def chart_balance_overview(match_df):
-    """Horizontal bar per match coloured by balance score."""
-    fig, ax = _fig_style()
-    fig.set_size_inches(6, max(2.5, len(match_df) * 0.55))
+    """Horizontal bar per match coloured by balance score. Scales cleanly to any number of matches."""
+    n       = len(match_df)
+    row_h   = 0.52          # inches per row
+    fig_h   = max(2.8, n * row_h + 1.2)   # +1.2 for legend + axes padding
+    lbl_fs  = max(6.5, min(9, 9 - n * 0.06))  # shrink label font at scale
+    bar_h   = min(0.62, max(0.28, 0.62 - n * 0.008))
+
+    fig, ax = plt.subplots(figsize=(6.5, fig_h))
     fig.patch.set_facecolor(BG_CARD)
     ax.set_facecolor(BG_CARD)
 
-    labels = [f"Match {r['Match']}" for _, r in match_df.iterrows()]
+    labels = [f"M{r['Match']}" for _, r in match_df.iterrows()]
     scores = match_df["Balance Score"].tolist()
     colors = [
         "#3a7d44" if s >= 95 else
@@ -340,14 +352,21 @@ def chart_balance_overview(match_df):
     ]
 
     bars = ax.barh(labels[::-1], scores[::-1], color=colors[::-1],
-                   height=0.55, edgecolor=BG_DARK, linewidth=0.5)
+                   height=bar_h, edgecolor=BG_DARK, linewidth=0.4)
     ax.axvline(95, color=TEXT_SEC, linewidth=0.8, linestyle=":", alpha=0.5)
-    ax.set_xlim(40, 105)
-    ax.set_xlabel("Balance Score (%)", color=TEXT_SEC, fontsize=9)
+    ax.set_xlim(40, 108)
+    ax.set_xlabel("Balance Score (%)", color=TEXT_SEC, fontsize=8)
+    ax.tick_params(colors=TEXT_SEC, labelsize=lbl_fs)
+    ax.spines["bottom"].set_color(BORDER)
+    ax.spines["left"].set_color(BORDER)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
-    for bar, s in zip(bars, scores[::-1]):
-        ax.text(s + 0.3, bar.get_y() + bar.get_height()/2,
-                f"{s:.1f}%", va="center", color=TEXT_PRI, fontsize=8)
+    # only label every bar if few matches; thin label every other if many
+    for i, (bar, s) in enumerate(zip(bars, scores[::-1])):
+        if n <= 30 or i % 2 == 0:
+            ax.text(s + 0.4, bar.get_y() + bar.get_height()/2,
+                    f"{s:.1f}%", va="center", color=TEXT_PRI, fontsize=max(6, lbl_fs - 0.5))
 
     legend_patches = [
         mpatches.Patch(color="#3a7d44", label="Perfect (≥95%)"),
@@ -356,58 +375,103 @@ def chart_balance_overview(match_df):
         mpatches.Patch(color=WINE,      label="Poor (<60%)"),
     ]
     ax.legend(handles=legend_patches, frameon=False, labelcolor=TEXT_SEC,
-              fontsize=7.5, loc="lower right")
-    fig.tight_layout()
+              fontsize=7, loc="lower right")
+    fig.tight_layout(pad=0.8)
     return fig
 
 
 def chart_ets_vs_avg(match_df):
-    """Scatter: raw avg vs ETS for every team, coloured by team."""
-    fig, ax = _fig_style()
-    fig.set_size_inches(5.5, 4)
+    """Scatter: raw avg vs ETS for every team. Fixed size — scales naturally via alpha + sizing."""
+    n   = len(match_df)
+    # Shrink dots and add transparency when many points overlap
+    dot_size  = max(25, 80 - n * 1.5)
+    dot_alpha = max(0.45, 1.0 - n * 0.015)
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    fig.patch.set_facecolor(BG_CARD)
+    ax.set_facecolor(BG_CARD)
+    ax.tick_params(colors=TEXT_SEC, labelsize=8.5)
+    ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
+    ax.spines["top"].set_visible(False);   ax.spines["right"].set_visible(False)
 
     for _, row in match_df.iterrows():
-        ax.scatter(row["Team A Avg"], row["ETS A"], color=WINE_GLOW, s=70, zorder=4)
-        ax.scatter(row["Team B Avg"], row["ETS B"], color="#5577CC", s=70, zorder=4)
+        ax.scatter(row["Team A Avg"], row["ETS A"], color=WINE_GLOW,
+                   s=dot_size, alpha=dot_alpha, zorder=4, linewidths=0)
+        ax.scatter(row["Team B Avg"], row["ETS B"], color="#5577CC",
+                   s=dot_size, alpha=dot_alpha, zorder=4, linewidths=0)
         ax.plot([row["Team A Avg"], row["ETS A"]], [row["ETS A"], row["ETS A"]],
-                color=BORDER, linewidth=0.6, zorder=3)
+                color=BORDER, linewidth=0.5, alpha=0.5, zorder=3)
 
-    lo = min(match_df[["Team A Avg","Team B Avg","ETS A","ETS B"]].min()) - 0.3
-    hi = max(match_df[["Team A Avg","Team B Avg","ETS A","ETS B"]].max()) + 0.3
-    ax.plot([lo, hi], [lo, hi], color=GOLD, linewidth=1.2, linestyle="--",
-            label="ETS = Raw Avg (no penalty)")
+    all_vals = pd.concat([match_df[c] for c in ["Team A Avg","Team B Avg","ETS A","ETS B"]])
+    lo, hi = all_vals.min() - 0.4, all_vals.max() + 0.4
+    ax.plot([lo, hi], [lo, hi], color=GOLD, linewidth=1.2, linestyle="--")
     ax.set_xlabel("Raw Average Skill", color=TEXT_SEC, fontsize=9)
     ax.set_ylabel("Effective Team Skill (ETS)", color=TEXT_SEC, fontsize=9)
-    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=8)
     ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
 
-    ta_patch = mpatches.Patch(color=WINE_GLOW, label="Team A")
-    tb_patch = mpatches.Patch(color="#5577CC",  label="Team B")
-    ax.legend(handles=[ta_patch, tb_patch, mpatches.Patch(color=GOLD, label="ETS = Avg baseline")],
-              frameon=False, labelcolor=TEXT_SEC, fontsize=7.5)
-    fig.tight_layout()
+    ax.legend(
+        handles=[
+            mpatches.Patch(color=WINE_GLOW, label="Team A"),
+            mpatches.Patch(color="#5577CC",  label="Team B"),
+            mpatches.Patch(color=GOLD,       label="ETS = Avg (no penalty)"),
+        ],
+        frameon=False, labelcolor=TEXT_SEC, fontsize=7.5)
+    fig.tight_layout(pad=0.8)
     return fig
 
 
 def chart_std_comparison(match_df):
-    """Grouped bar: Team A std vs Team B std per match."""
-    fig, ax = _fig_style()
-    fig.set_size_inches(6, max(2.5, len(match_df) * 0.6))
-    fig.patch.set_facecolor(BG_CARD)
+    """
+    Grouped bar: Team A std vs Team B std.
+    Flips to horizontal layout when there are many matches so labels never overlap.
+    """
+    n = len(match_df)
+    labels = [f"M{r['Match']}" for _, r in match_df.iterrows()]
+    a_std  = match_df["Team A Std"].tolist()
+    b_std  = match_df["Team B Std"].tolist()
 
-    x  = np.arange(len(match_df))
-    w  = 0.35
-    ax.bar(x - w/2, match_df["Team A Std"], width=w, label="Team A",
-           color=WINE, edgecolor=BG_DARK, linewidth=0.5)
-    ax.bar(x + w/2, match_df["Team B Std"], width=w, label="Team B",
-           color="#2F4472", edgecolor=BG_DARK, linewidth=0.5)
-    ax.axhline(1.5, color=GOLD, linewidth=1, linestyle="--", alpha=0.7)
-    ax.text(len(match_df) - 0.5, 1.6, "Low-variance target", color=GOLD, fontsize=7, ha="right")
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"M{r['Match']}" for _, r in match_df.iterrows()], color=TEXT_SEC, fontsize=8)
-    ax.set_ylabel("Skill Std Dev", color=TEXT_SEC, fontsize=9)
-    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=8)
-    fig.tight_layout()
+    if n <= 15:
+        # ── Vertical bars — comfortable up to ~15 matches ──
+        fig_w = max(5.5, n * 0.55 + 1.5)
+        fig, ax = plt.subplots(figsize=(fig_w, 3.5))
+        fig.patch.set_facecolor(BG_CARD)
+        ax.set_facecolor(BG_CARD)
+
+        x = np.arange(n)
+        w = min(0.35, 0.7 / max(1, n * 0.08 + 0.5))
+        ax.bar(x - w/2, a_std, width=w, label="Team A", color=WINE,    edgecolor=BG_DARK, linewidth=0.4)
+        ax.bar(x + w/2, b_std, width=w, label="Team B", color="#2F4472", edgecolor=BG_DARK, linewidth=0.4)
+        ax.axhline(1.5, color=GOLD, linewidth=1, linestyle="--", alpha=0.7)
+        ax.text(n - 0.5, 1.62, "Low-variance target", color=GOLD, fontsize=7, ha="right")
+        ax.set_xticks(x)
+        lbl_fs = max(6.5, 9 - n * 0.15)
+        ax.set_xticklabels(labels, color=TEXT_SEC, fontsize=lbl_fs,
+                           rotation=45 if n > 8 else 0, ha="right" if n > 8 else "center")
+        ax.set_ylabel("Skill Std Dev", color=TEXT_SEC, fontsize=9)
+    else:
+        # ── Horizontal bars — cleaner for 16+ matches ──
+        row_h  = 0.45
+        fig_h  = max(4, n * row_h + 1.2)
+        fig, ax = plt.subplots(figsize=(5.5, fig_h))
+        fig.patch.set_facecolor(BG_CARD)
+        ax.set_facecolor(BG_CARD)
+
+        y  = np.arange(n)
+        bh = min(0.3, max(0.15, 0.3 - n * 0.003))
+        ax.barh(y + bh/2, a_std, height=bh, label="Team A", color=WINE,    edgecolor=BG_DARK, linewidth=0.4)
+        ax.barh(y - bh/2, b_std, height=bh, label="Team B", color="#2F4472", edgecolor=BG_DARK, linewidth=0.4)
+        ax.axvline(1.5, color=GOLD, linewidth=1, linestyle="--", alpha=0.7)
+        ax.text(1.55, n - 1, "Low-variance target", color=GOLD, fontsize=6.5, va="top")
+        ax.set_yticks(y)
+        lbl_fs = max(6, 8.5 - n * 0.04)
+        ax.set_yticklabels(labels, color=TEXT_SEC, fontsize=lbl_fs)
+        ax.set_xlabel("Skill Std Dev", color=TEXT_SEC, fontsize=9)
+
+    ax.tick_params(colors=TEXT_SEC, labelsize=8)
+    ax.spines["top"].set_visible(False);   ax.spines["right"].set_visible(False)
+    ax.spines["bottom"].set_color(BORDER); ax.spines["left"].set_color(BORDER)
+    ax.legend(frameon=False, labelcolor=TEXT_SEC, fontsize=7.5)
+    fig.tight_layout(pad=0.8)
     return fig
 
 
