@@ -993,6 +993,13 @@ logistic effect without any variance penalty applied.
     st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.75rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.6rem'>Interactive Team Builder</div>", unsafe_allow_html=True)
     st.markdown(f"<div style='color:{TEXT_SEC};font-size:0.85rem;margin-bottom:0.8rem'>Build two teams with the sliders below and watch the formula compute live. The default example shows a carry team (A) against an even team (B) with the same raw average.</div>", unsafe_allow_html=True)
 
+    alpha_live = st.slider(
+        "Variance penalty α (this builder only)",
+        0.0, 1.0, 0.5, step=0.05, key="alpha_live",
+        help="α controls how harshly uneven skill distribution is penalised. "
+             "0 = ignore spread entirely. 0.35 = matchmaking default. 0.5 = your manual calculation."
+    )
+
     fi1, fi2 = st.columns(2)
     with fi1:
         st.markdown(f"<div style='color:{WINE_GLOW};font-size:0.8rem;font-weight:700;margin-bottom:0.4rem'>TEAM A</div>", unsafe_allow_html=True)
@@ -1001,9 +1008,9 @@ logistic effect without any variance penalty applied.
         st.markdown(f"<div style='color:#5577CC;font-size:0.8rem;font-weight:700;margin-bottom:0.4rem'>TEAM B</div>", unsafe_allow_html=True)
         tb_vals = [st.slider(f"Player B{i+1}", 1, 10, [3,3,4,4,3,3][i], key=f"tb{i}") for i in range(6)]
 
-    ets_a_live = effective_team_skill(ta_vals)
-    ets_b_live = effective_team_skill(tb_vals)
-    wc_live    = win_chance_teams(ta_vals, tb_vals)
+    ets_a_live = effective_team_skill(ta_vals, alpha_live)
+    ets_b_live = effective_team_skill(tb_vals, alpha_live)
+    wc_live    = win_chance_teams(ta_vals, tb_vals, alpha_live)
     bs_live    = balance_score_from_wc(wc_live)
 
     fm1, fm2, fm3, fm4, fm5 = st.columns(5)
@@ -1017,11 +1024,12 @@ logistic effect without any variance penalty applied.
         col.markdown(f'<div class="metric-card"><div class="val">{val}</div><div class="lbl">{lbl}</div></div>', unsafe_allow_html=True)
 
     st.markdown("")
-    penalty_a = ALPHA * np.std(ta_vals)
-    penalty_b = ALPHA * np.std(tb_vals)
+    penalty_a = alpha_live * np.std(ta_vals)
+    penalty_b = alpha_live * np.std(tb_vals)
     st.markdown(f"""<div class="callout">
-<b>Team A</b>: mean = {np.mean(ta_vals):.2f}, std = {np.std(ta_vals):.2f} → variance penalty = {penalty_a:.2f} → ETS = <b>{ets_a_live:.2f}</b><br>
-<b>Team B</b>: mean = {np.mean(tb_vals):.2f}, std = {np.std(tb_vals):.2f} → variance penalty = {penalty_b:.2f} → ETS = <b>{ets_b_live:.2f}</b><br>
+<b>α = {alpha_live}</b> &nbsp;(matchmaking default is {ALPHA} — adjust above to match your own calculation)<br><br>
+<b>Team A</b>: mean = {np.mean(ta_vals):.2f}, std = {np.std(ta_vals):.2f} → penalty = {alpha_live} × {np.std(ta_vals):.2f} = {penalty_a:.2f} → ETS = <b>{ets_a_live:.2f}</b><br>
+<b>Team B</b>: mean = {np.mean(tb_vals):.2f}, std = {np.std(tb_vals):.2f} → penalty = {alpha_live} × {np.std(tb_vals):.2f} = {penalty_b:.2f} → ETS = <b>{ets_b_live:.2f}</b><br>
 ETS gap = {abs(ets_a_live - ets_b_live):.2f} → win probability = 1 / (1 + 10^(−{abs(ets_a_live - ets_b_live):.2f} / 7)) = <b>{wc_live*100:.1f}%</b>
 </div>""", unsafe_allow_html=True)
 
